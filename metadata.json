@@ -1,0 +1,5 @@
+{
+  "name": "SmartReq",
+  "description": "A next-generation, browser-based API client for single-request debugging, high-performance bulk processing, and intelligent request generation.",
+  "requestFramePermissions": []
+}

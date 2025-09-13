@@ -1,0 +1,23 @@
+---
+alwaysApply: true
+---
+# Project Structure Guide
+
+- **Entry points**: `index.html`, `index.tsx`
+- **App shell**: `src/App.tsx`
+- **UI components**: `src/components/**`
+- **Feature workspaces**: `src/components/{request,response,bulk,flow,discovery}`
+- **Contexts**: `src/context/**`
+- **Hooks**: `src/hooks/**`
+- **Utilities**: `src/utils/**`
+- **Styles**: `src/styles/index.css`
+- **API boundary**: `src/api/index.ts`
+- **Types**: `src/types.ts`
+- **Build config**: `vite.config.ts`, `tsconfig.json`
+
+Start from [`index.tsx`](mdc:index.tsx) which renders [`src/App.tsx`](mdc:src/App.tsx).
+Key feature views include [`components/request/RequestComposer`](mdc:src/components/request/RequestComposer.tsx)
+and [`components/response/ResponsePanel`](mdc:src/components/response/ResponsePanel.tsx).
+Shared state providers live in [`src/context`](mdc:src/context/). Reusable UI primitives are under
+[`src/components/ui`](mdc:src/components/ui/).
+

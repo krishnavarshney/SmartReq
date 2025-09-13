@@ -1,0 +1,20 @@
+---
+description: Best practices for Vite applications and environment management
+---
+# Vite and Environment Best Practices
+
+- **Env files**: Use `.env`, `.env.local` (gitignored) for secrets; prefix with `VITE_`.
+- **Access env**: read via `import.meta.env.VITE_*` (not `process.env`).
+- **Build vs runtime**: env is injected at build time; avoid runtime mutation.
+- **Public assets**: place static files in `/public`; reference by `/file.ext`.
+- **Base path**: set `base` in `vite.config.ts` for subpath deployments.
+- **Code splitting**: use dynamic `import()` for heavy/rare routes.
+- **Aliases**: configure `resolve.alias` (e.g., `@` → `src`).
+- **Dev proxy**: prefer `server.proxy` for APIs; avoid in-app CORS hacks.
+- **Tree-shaking**: prefer ES modules; avoid unnecessary default exports.
+- **Performance**: tune `build.target` and `chunkSizeWarningLimit`.
+- **Security**: never commit secrets; use `.env.local` and keep it out of git.
+- **Validate**: `vite build` then serve `dist/` to test production output.
+
+See [`vite.config.ts`](mdc:vite.config.ts) and [`index.html`](mdc:index.html).
+

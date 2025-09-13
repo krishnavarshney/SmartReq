@@ -1,0 +1,70 @@
+---
+alwaysApply: false
+name: vite-best-practices.mdc
+description: Best practices for Vite applications and environment management
+globs: **/*.{ts,tsx,js,jsx}
+---
+
+- Use `import.meta.env.VITE_*` for environment variables; avoid `process.env`.
+- Keep Vite version consistent across the project; only include in `devDependencies`.
+- Normalize headers to lowercase on ingestion for consistency.
+
+---
+name: react-best-practices.mdc
+description: Best practices for React applications and component management
+globs: **/*.{ts,tsx,js,jsx}
+---
+
+- Use functional components and hooks for state management.
+- Implement error boundaries to catch errors in the component tree.
+- Ensure all interactive elements have appropriate `aria-labels` for accessibility.
+
+---
+name: typescript-best-practices.mdc 
+description: TypeScript coding standards and type safety guidelines
+globs: **/*.{ts,tsx}
+---
+
+- Use strict null checks to avoid runtime errors.
+- Prefer interfaces over types for defining object shapes.
+- Implement type guards and assertions for better type safety.
+
+---
+name: accessibility-best-practices.mdc
+description: Guidelines for accessibility in web applications
+globs: **/*.{ts,tsx,html}
+---
+
+- Ensure all interactive controls have focus rings and appropriate `aria-labels`.
+- Use modals that trap focus and restore focus on close; allow ESC to close.
+- Implement keyboard shortcuts for common actions, providing visual feedback.
+
+---
+name: testing-best-practices.mdc
+description: Best practices for testing in JavaScript applications
+globs: **/*.{ts,tsx,js,jsx}
+---
+
+- Write unit tests for utility functions and critical components.
+- Use snapshot testing for UI components in various states.
+- Maintain a manual QA checklist for edge cases and performance testing.
+
+---
+name: security-best-practices.mdc
+description: Security guidelines for web applications
+globs: **/*.{ts,tsx,js,jsx}
+---
+
+- Avoid logging sensitive information; guard debug logs with a development flag.
+- Run scripts in a Web Worker sandbox to isolate untrusted code.
+- Clearly label any simulated data to avoid confusion.
+
+---
+name: performance-best-practices.mdc
+description: Performance optimization strategies for web applications
+globs: **/*.{ts,tsx,js,jsx}
+---
+
+- Measure performance before optimizing; avoid premature optimizations.
+- Use lazy loading for components and routes to improve initial load times.
+- Optimize rendering by using React.memo and useCallback where appropriate.

@@ -1,0 +1,16 @@
+---
+globs: *.ts,*.tsx
+---
+# TypeScript/React Style Guide
+
+- **Types first**: export shared interfaces/types from `src/types.ts`.
+- **Explicit props**: annotate component props; avoid `any`.
+- **State**: prefer context hooks from `src/context/**` over prop drilling.
+- **Naming**: Components `PascalCase`, hooks `useX`, variables use full words.
+- **Control flow**: use early returns; handle errors first.
+- **Effects**: keep effects minimal; specify dependency arrays accurately.
+- **Formatting**: match existing style; wrap long lines instead of one-liners.
+- **Dead code**: remove unused imports/variables; fix linter warnings.
+- **Composition**: leverage `components/ui/**` primitives for consistency.
+- **Comments**: document non-obvious "why" above code; avoid inline noise.
+
