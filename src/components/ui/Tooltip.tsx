@@ -1,69 +1,91 @@
-import React, { useState, useRef, useLayoutEffect } from 'react';
+import React, { useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 interface TooltipProps {
   content: React.ReactNode;
   children: React.ReactElement;
+  side?: 'top' | 'bottom' | 'right' | 'left';
+  /** Keyboard hint rendered as a kbd chip after the content. */
+  shortcut?: string;
+  delay?: number;
 }
 
-export const Tooltip: React.FC<TooltipProps> = ({ content, children }) => {
+export const Tooltip: React.FC<TooltipProps> = ({ content, children, side = 'top', shortcut, delay = 350 }) => {
+  const id = useId();
   const triggerRef = useRef<HTMLSpanElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const timer = useRef<number | undefined>(undefined);
   const [isVisible, setIsVisible] = useState(false);
 
-  if (!content) {
-    return <>{children}</>;
-  }
-
   useLayoutEffect(() => {
-    if (isVisible && triggerRef.current && tooltipRef.current) {
-      const triggerRect = triggerRef.current.getBoundingClientRect();
-      const tooltipRect = tooltipRef.current.getBoundingClientRect();
-      const portal = tooltipRef.current;
-
-      let top = triggerRect.top - tooltipRect.height - 8;
-      let left = triggerRect.left + (triggerRect.width / 2) - (tooltipRect.width / 2);
-
-      if (top < 8) {
-        top = triggerRect.bottom + 8;
-      }
-      if (left < 8) {
-        left = 8;
-      }
-      if (left + tooltipRect.width > window.innerWidth - 8) {
-        left = window.innerWidth - tooltipRect.width - 8;
-      }
-
-      portal.style.top = `${top}px`;
-      portal.style.left = `${left}px`;
+    if (!isVisible || !triggerRef.current || !tooltipRef.current) return;
+    const t = triggerRef.current.getBoundingClientRect();
+    const tip = tooltipRef.current.getBoundingClientRect();
+    const gap = 6;
+    let top = 0;
+    let left = 0;
+    if (side === 'top' || side === 'bottom') {
+      top = side === 'top' ? t.top - tip.height - gap : t.bottom + gap;
+      if (top < 4) top = t.bottom + gap;
+      if (top + tip.height > window.innerHeight - 4) top = t.top - tip.height - gap;
+      left = t.left + t.width / 2 - tip.width / 2;
+    } else {
+      left = side === 'right' ? t.right + gap : t.left - tip.width - gap;
+      top = t.top + t.height / 2 - tip.height / 2;
     }
-  }, [isVisible]);
-  
-  const handleMouseEnter = () => setIsVisible(true);
-  const handleMouseLeave = () => setIsVisible(false);
+    left = Math.max(4, Math.min(left, window.innerWidth - tip.width - 4));
+    tooltipRef.current.style.top = `${top}px`;
+    tooltipRef.current.style.left = `${left}px`;
+    tooltipRef.current.style.opacity = '1';
+  }, [isVisible, side]);
+
+  if (!content) return children;
+
+  const show = () => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setIsVisible(true), delay);
+  };
+  const hide = () => {
+    window.clearTimeout(timer.current);
+    setIsVisible(false);
+  };
 
   return (
     <>
       <span
         ref={triggerRef}
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
-        aria-describedby="tooltip"
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        onMouseDown={hide}
+        aria-describedby={isVisible ? id : undefined}
         className="inline-flex"
       >
         {children}
       </span>
-      {isVisible && createPortal(
-        <div 
+      {isVisible &&
+        createPortal(
+          <div
             ref={tooltipRef}
             role="tooltip"
-            id="tooltip"
-            className="fixed px-2 py-1 glass-surface-lite elev-2 text-popover-foreground text-xs rounded-md shadow-popover z-[9999] animate-slide-up-and-fade"
-        >
-          {content}
-        </div>,
-        document.body
-      )}
+            id={id}
+            style={{ opacity: 0 }}
+            className="pointer-events-none fixed z-[9999] flex max-w-xs items-center gap-2 rounded-md border border-border bg-popover px-2 py-1 text-xs font-medium text-popover-foreground shadow-popover transition-opacity duration-100"
+          >
+            <span>{content}</span>
+            {shortcut && <Kbd>{shortcut}</Kbd>}
+          </div>,
+          document.body
+        )}
     </>
   );
 };
+
+export const Kbd: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
+  <kbd
+    className={`inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-border bg-muted px-1 font-sans text-[10px] font-medium text-muted-foreground ${className}`}
+  >
+    {children}
+  </kbd>
+);

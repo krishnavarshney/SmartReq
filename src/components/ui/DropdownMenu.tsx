@@ -107,13 +107,30 @@ export const DropdownMenuContent = React.forwardRef<HTMLDivElement, React.HTMLAt
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }, [isOpen, setIsOpen, triggerRef]);
 
+    useEffect(() => {
+      if (!isOpen) return;
+      const raf = requestAnimationFrame(() => contentRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus());
+      return () => cancelAnimationFrame(raf);
+    }, [isOpen]);
+
     if (!isOpen) return null;
+
+    const onKeyDown = (e: React.KeyboardEvent) => {
+      const items = Array.from(contentRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? []);
+      const idx = items.indexOf(document.activeElement as HTMLElement);
+      if (e.key === 'ArrowDown') { e.preventDefault(); items[(idx + 1) % items.length]?.focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); items[(idx - 1 + items.length) % items.length]?.focus(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setIsOpen(false); triggerRef.current?.focus(); }
+      else if (e.key === 'Tab') { setIsOpen(false); }
+    };
 
     return createPortal(
       <div
         ref={contentRef}
-        style={{ top: `${position.top}px`, left: `${position.left}px`, minWidth: `${position.minWidth}px` }}
-        className={`fixed bg-popover text-popover-foreground border border-border rounded-md shadow-popover z-50 p-1 animate-scale-in ${className}`}
+        role="menu"
+        onKeyDown={onKeyDown}
+        style={{ top: `${position.top}px`, left: `${position.left}px`, minWidth: `${Math.max(position.minWidth, 160)}px` }}
+        className={`fixed bg-popover text-popover-foreground border border-border rounded-lg shadow-popover z-[60] p-1 animate-scale-in ${className}`}
         {...props}
       >
         {children}
@@ -123,23 +140,31 @@ export const DropdownMenuContent = React.forwardRef<HTMLDivElement, React.HTMLAt
   }
 );
 
-export const DropdownMenuItem = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement>>(
-  ({ children, className = '', ...props }, ref) => {
-    const { setIsOpen } = useDropdownMenu();
-    
+export const DropdownMenuItem = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & { destructive?: boolean }>(
+  ({ children, className = '', onClick, destructive, ...props }, ref) => {
+    const { setIsOpen, triggerRef } = useDropdownMenu();
+
     return (
       <button
         ref={ref}
+        type="button"
         role="menuitem"
-        onClick={(e) => {
-          props.onClick?.(e);
-          setIsOpen(false);
-        }}
-        className={`w-full text-left flex items-center rounded-sm px-2 py-1.5 text-sm outline-none cursor-pointer hover:bg-accent ${className}`}
         {...props}
+        onClick={(e) => {
+          onClick?.(e);
+          setIsOpen(false);
+          triggerRef.current?.focus();
+        }}
+        className={`w-full text-left flex items-center gap-2 rounded-md px-2 h-8 text-[13px] outline-none cursor-pointer hover:bg-accent focus-visible:bg-accent disabled:opacity-40 disabled:pointer-events-none [&_svg]:h-4 [&_svg]:w-4 [&_svg]:text-muted-foreground ${destructive ? 'text-destructive-text hover:bg-destructive-bg [&_svg]:!text-destructive-text' : ''} ${className}`}
       >
         {children}
       </button>
     );
   }
+);
+
+export const DropdownMenuSeparator: React.FC = () => <div role="separator" className="-mx-1 my-1 h-px bg-border" />;
+
+export const DropdownMenuLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>
 );

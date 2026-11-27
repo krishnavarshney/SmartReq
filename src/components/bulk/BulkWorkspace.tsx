@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Resizable } from 're-resizable';
 import { VerticalResizableHandle } from '../ui/VerticalResizableHandle';
 import { ApiRequest, BulkResult, BulkRunState, BulkSettings, KeyValueItem } from '../../types';
-import { RequestComposer } from '../RequestComposer';
-import { RequestPanel } from '../RequestPanel';
+import { RequestComposer } from '../request/RequestComposer';
+import { RequestPanel } from '../request/RequestPanel';
 import { DataInputPanel } from './DataInputPanel';
 import { ExecutionPanel } from './ExecutionPanel';
 import { HorizontalResizableHandle } from '../ui/HorizontalResizableHandle';
@@ -11,8 +11,6 @@ import { HorizontalResizableHandle } from '../ui/HorizontalResizableHandle';
 interface BulkWorkspaceProps {
     request: ApiRequest;
     onRequestChange: (request: ApiRequest) => void;
-    isBodyInvalid: boolean;
-    onBodyValidationChange: (isInvalid: boolean) => void;
     data: Record<string, string>[];
     onDataChange: (data: Record<string, string>[]) => void;
     results: BulkResult[];
@@ -22,6 +20,7 @@ interface BulkWorkspaceProps {
     onResume: () => void;
     onStop: () => void;
     onTestSend: () => void;
+    isTestSending?: boolean;
     settings: BulkSettings;
     onSettingsChange: (settings: BulkSettings) => void;
     onGenerateBulkData: (data: Record<string, any>[]) => void;
@@ -29,6 +28,7 @@ interface BulkWorkspaceProps {
 }
 
 export const BulkWorkspace: React.FC<BulkWorkspaceProps> = (props) => {
+    const [isBodyInvalid, setIsBodyInvalid] = useState(false);
     return (
         <div className="flex-grow flex flex-col overflow-hidden gap-4">
             <div className="flex-grow flex overflow-hidden gap-4 flex-row h-[60%]">
@@ -49,8 +49,8 @@ export const BulkWorkspace: React.FC<BulkWorkspaceProps> = (props) => {
                         url={props.request.url}
                         onUrlChange={url => props.onRequestChange({ ...props.request, url })}
                         onSend={props.onTestSend}
-                        isLoading={props.runState === 'running'}
-                        isBodyInvalid={props.isBodyInvalid}
+                        isLoading={!!props.isTestSending}
+                        isBodyInvalid={isBodyInvalid}
                         globals={props.globals}
                         sendButtonLabel="Send Test"
                         dataVariables={props.data[0]}
@@ -59,7 +59,7 @@ export const BulkWorkspace: React.FC<BulkWorkspaceProps> = (props) => {
                         <RequestComposer 
                             request={props.request} 
                             onRequestChange={props.onRequestChange} 
-                            onBodyValidationChange={props.onBodyValidationChange}
+                            onBodyValidationChange={setIsBodyInvalid}
                             onGenerateBulkData={props.onGenerateBulkData}
                             onSave={() => {}}
                             data={props.data}

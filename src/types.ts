@@ -159,7 +159,7 @@ export interface BulkResult {
   data: Record<string, string>;
   request: FinalApiRequest;
   response: ApiResponse;
-  status: 'pending' | 'success' | 'error';
+  status: 'pending' | 'running' | 'success' | 'error' | 'cancelled';
 }
 
 export interface BulkSettings {

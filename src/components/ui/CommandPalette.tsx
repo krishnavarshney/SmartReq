@@ -5,6 +5,9 @@ export interface CommandItem {
   title: string;
   shortcut?: string;
   group?: string;
+  icon?: React.ReactNode;
+  /** Extra search terms not shown in the UI. */
+  keywords?: string;
   action: () => void;
 }
 
@@ -54,7 +57,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose, i
     const q = query.trim().toLowerCase();
     if (!q) return items;
     return items.filter((i) =>
-      i.title.toLowerCase().includes(q) || (i.group && i.group.toLowerCase().includes(q))
+      i.title.toLowerCase().includes(q) || (i.group && i.group.toLowerCase().includes(q)) || (i.keywords && i.keywords.toLowerCase().includes(q))
     );
   }, [query, items]);
 

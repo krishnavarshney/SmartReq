@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Resizable } from 're-resizable';
 import { LogEntry, RequestItem } from '../../types';
 import { LogPanel } from './LogPanel';
@@ -6,7 +6,7 @@ import { CollectionsView } from './CollectionsView';
 import { EnvironmentsPanel } from './EnvironmentsPanel';
 import { Tooltip } from '../ui/Tooltip';
 import { FolderKanban, Globe, History } from '../icons';
-import { useApp } from '../../context/AppContext';
+import { SidebarPanel, useApp } from '../../context/AppContext';
 import { useWorkspace } from '../../context/WorkspaceContext';
 
 interface SidebarProps {
@@ -16,88 +16,105 @@ interface SidebarProps {
   setSelectedNodeId: (id: string | null) => void;
 }
 
-type Panel = 'collections' | 'environment' | 'history';
+const RAIL_WIDTH = 48;
 
-const NavButton: React.FC<{ icon: React.ElementType, label: string, isActive: boolean, onClick: () => void }> = ({ icon: Icon, label, isActive, onClick }) => (
-    <Tooltip content={label}>
-        <button
-            onClick={onClick}
-            aria-label={label}
-            className={`flex items-center justify-center w-12 h-12 rounded-lg relative transition-colors duration-200 ${
-                isActive 
-                ? 'bg-primary text-primary-foreground' 
-                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-            }`}
-        >
-            <Icon className="h-5 w-5" />
-        </button>
-    </Tooltip>
-);
+const NAV: { panel: SidebarPanel; label: string; icon: React.ElementType }[] = [
+  { panel: 'collections', label: 'Collections', icon: FolderKanban },
+  { panel: 'environment', label: 'Environments', icon: Globe },
+  { panel: 'history', label: 'History', icon: History },
+];
 
 export const Sidebar: React.FC<SidebarProps> = ({ onLogClick, openRequestInTab, selectedNodeId, setSelectedNodeId }) => {
-  const { isSidebarOpen, setIsSidebarOpen, sidebarWidth, setSidebarWidth } = useApp();
+  const { isSidebarOpen, setIsSidebarOpen, sidebarWidth, setSidebarWidth, sidebarPanel, setSidebarPanel, isMobile } = useApp();
   const { workspace, setWorkspace } = useWorkspace();
-  const [activePanel, setActivePanel] = useState<Panel>('collections');
-  
-  const handleNavClick = (panel: Panel) => {
-    setActivePanel(panel);
-    if (!isSidebarOpen) {
-        setIsSidebarOpen(true);
+
+  const handleNavClick = (panel: SidebarPanel) => {
+    if (panel === sidebarPanel && isSidebarOpen && !isMobile) {
+      setIsSidebarOpen(false);
+      return;
     }
+    setSidebarPanel(panel);
+    setIsSidebarOpen(true);
   };
 
+  const openRequest = (item: RequestItem, name: string) => {
+    openRequestInTab(item, name);
+    if (isMobile) setIsSidebarOpen(false);
+  };
+
+  const panelContent = (
+    <div className="flex h-full w-full flex-col overflow-hidden">
+      {sidebarPanel === 'collections' && (
+        <CollectionsView
+          workspace={workspace}
+          setWorkspace={setWorkspace}
+          openRequestInTab={openRequest}
+          selectedNodeId={selectedNodeId}
+          setSelectedNodeId={setSelectedNodeId}
+        />
+      )}
+      {sidebarPanel === 'environment' && <EnvironmentsPanel />}
+      {sidebarPanel === 'history' && <LogPanel onLogClick={onLogClick} />}
+    </div>
+  );
+
+  const rail = (
+    <nav aria-label="Sidebar" className="flex w-12 flex-shrink-0 flex-col items-center gap-1 border-r border-border bg-card py-2">
+      {NAV.map(({ panel, label, icon: Icon }) => {
+        const active = isSidebarOpen && sidebarPanel === panel;
+        return (
+          <Tooltip key={panel} content={label} side="right">
+            <button
+              type="button"
+              onClick={() => handleNavClick(panel)}
+              aria-label={label}
+              aria-pressed={active}
+              className={`relative flex h-9 w-9 items-center justify-center rounded-md transition-colors focus-ring ${
+                active ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+              }`}
+            >
+              {active && <span className="absolute -left-[7px] top-2 bottom-2 w-0.5 rounded-full bg-primary" />}
+              <Icon className="h-[18px] w-[18px]" />
+            </button>
+          </Tooltip>
+        );
+      })}
+    </nav>
+  );
+
+  if (isMobile) {
+    return (
+      <aside
+        aria-hidden={!isSidebarOpen}
+        className={`fixed inset-y-0 left-0 z-40 flex w-[min(340px,88vw)] bg-card shadow-popover transition-transform duration-200 ease-out ${
+          isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+        // `inert` keeps the off-screen drawer out of the tab order.
+        inert={!isSidebarOpen}
+      >
+        {rail}
+        <div className="min-w-0 flex-1">{panelContent}</div>
+      </aside>
+    );
+  }
+
   return (
-    <aside
-      className={`
-        flex-shrink-0
-        transition-all duration-300 ease-in-out
-        ${isSidebarOpen ? '' : 'w-16'}
-      `}
-      style={{ width: isSidebarOpen ? sidebarWidth : 64 }}
-    >
-        <div className="flex h-full">
-            {/* Icon Navigation Bar */}
-            <div className="w-16 flex-shrink-0 flex flex-col items-center gap-2 p-2 bg-card/80 backdrop-blur-md border-r border-border sticky top-0 z-10">
-                <NavButton icon={FolderKanban} label={`Collections`} isActive={activePanel === 'collections'} onClick={() => handleNavClick('collections')} />
-                <NavButton icon={Globe} label={`Environment`} isActive={activePanel === 'environment'} onClick={() => handleNavClick('environment')} />
-                <NavButton icon={History} label={`History`} isActive={activePanel === 'history'} onClick={() => handleNavClick('history')} />
-            </div>
-            {isSidebarOpen && (
-                <Resizable
-                    className={`h-full bg-card/60 backdrop-blur-xl border-r border-border`}
-                    size={{ width: sidebarWidth - 64, height: '100%' }}
-                    minWidth={176} 
-                    maxWidth={436}
-                    enable={{ right: true }}
-                    onResizeStop={(e, dir, ref) => {
-                        setSidebarWidth(ref.offsetWidth + 64);
-                    }}
-                >
-                    <div className={`h-full w-full flex flex-col overflow-hidden transition-opacity`}>
-                        {/* Content Panel */}
-                        <div className="flex-1 flex flex-col overflow-hidden">
-                            {activePanel === 'collections' && (
-                                <CollectionsView
-                                    workspace={workspace}
-                                    setWorkspace={setWorkspace}
-                                    openRequestInTab={openRequestInTab}
-                                    selectedNodeId={selectedNodeId}
-                                    setSelectedNodeId={setSelectedNodeId}
-                                />
-                            )}
-                            {activePanel === 'environment' && (
-                                <EnvironmentsPanel />
-                            )}
-                            {activePanel === 'history' && (
-                                <LogPanel
-                                    onLogClick={onLogClick}
-                                />
-                            )}
-                        </div>
-                    </div>
-                </Resizable>
-            )}
-        </div>
+    <aside className="flex flex-shrink-0">
+      {rail}
+      {isSidebarOpen && (
+        <Resizable
+          className="border-r border-border bg-card"
+          size={{ width: sidebarWidth - RAIL_WIDTH, height: '100%' }}
+          minWidth={220}
+          maxWidth={480}
+          enable={{ right: true }}
+          handleStyles={{ right: { width: 6, right: -3, zIndex: 20 } }}
+          handleClasses={{ right: 'hover:bg-primary/40 active:bg-primary/60 transition-colors' }}
+          onResizeStop={(_e, _dir, ref) => setSidebarWidth(ref.offsetWidth + RAIL_WIDTH)}
+        >
+          {panelContent}
+        </Resizable>
+      )}
     </aside>
   );
 };

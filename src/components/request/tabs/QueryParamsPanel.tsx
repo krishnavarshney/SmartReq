@@ -15,6 +15,7 @@ export const QueryParamsPanel: React.FC<QueryParamsPanelProps> = ({ params, onPa
         onItemsChange={onParamsChange}
         keyPlaceholder="Key"
         valuePlaceholder="Value"
+        showEncodingToggle={true}
         showBulkEdit={true}
       />
     </div>
