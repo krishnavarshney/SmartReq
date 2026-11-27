@@ -1,6 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { GoogleGenAI } from '@google/genai';
 import { FilePlus, FolderPlus, Import, LayoutHorizontal, LayoutVertical, Settings, FileText, History, Globe } from './components/icons';
 import { Monitor, Moon, Sun, PanelLeft } from 'lucide-react';
 import {
@@ -24,7 +23,6 @@ import { buildFinalRequest, realApiCall } from './api';
 import { SaveRequestModal } from './components/modals/SaveRequestModal';
 import { useUrlSync } from './hooks/useUrlSync';
 import { WelcomeScreen } from './components/WelcomeScreen';
-import { ImportModal } from './components/modals/ImportModal';
 import { runTestScript } from './utils/scripting';
 import { SingleRequestView } from './components/request/SingleRequestView';
 import { AppMode, useApp } from './context/AppContext';
@@ -41,6 +39,9 @@ import { getApiKey } from './utils/apiKey';
 import { DiscoveryProvider } from './context/DiscoveryContext';
 import { CommandPalette, CommandItem } from './components/ui/CommandPalette';
 import { useBulkRunner } from './hooks/useBulkRunner';
+
+// Heavy parsers (OpenAPI, curl/tree-sitter) only load when the import dialog opens.
+const ImportModal = lazy(() => import('./components/modals/ImportModal').then((m) => ({ default: m.ImportModal })));
 
 const byteLength = (s: string) => new TextEncoder().encode(s).length;
 
@@ -339,6 +340,7 @@ Based on this API response:
 Write a comprehensive test suite. Include tests for status code, important headers like Content-Type, and key properties in the body. Check for data types and non-null values where appropriate.
 Respond ONLY with the raw JavaScript code. Do not include markdown fences or any explanatory text.`;
     try {
+      const { GoogleGenAI } = await import('@google/genai');
       const ai = new GoogleGenAI({ apiKey });
       const result = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
       const generated = (result.text ?? '').replace(/^```(?:javascript|js)?\s*|```\s*$/g, '').trim();
@@ -521,7 +523,11 @@ Respond ONLY with the raw JavaScript code. Do not include markdown fences or any
       {saveRequestState.isOpen && (
         <SaveRequestModal onClose={() => setSaveRequestState({ isOpen: false, tabId: null })} onSave={handleSaveAsRequest} />
       )}
-      {isImportModalOpen && <ImportModal onImport={handleImportCollection} />}
+      {isImportModalOpen && (
+        <Suspense fallback={null}>
+          <ImportModal onImport={handleImportCollection} />
+        </Suspense>
+      )}
       <OnboardingModal />
       <SettingsModal show={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} onClearCache={handleClearCache} />
       <CommandPalette open={isCommandPaletteOpen} onClose={() => setIsCommandPaletteOpen(false)} items={paletteItems} />
