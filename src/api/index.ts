@@ -1,6 +1,10 @@
 import { FinalApiRequest, ApiResponse, ResponseCookie, ApiRequest, KeyValueItem, RequestSettings } from '../types';
 import { interpolateString } from '../utils/interpolation';
 
+// btoa() throws on any non-Latin1 character, which real credentials routinely contain.
+const base64Utf8 = (value: string): string =>
+    btoa(String.fromCharCode(...new TextEncoder().encode(value)));
+
 const parseSetCookie = (cookieString: string): ResponseCookie[] => {
     if (!cookieString) return [];
     const parts = cookieString.split(';').map(p => p.trim());
@@ -119,19 +123,11 @@ export const realApiCall = async (req: FinalApiRequest): Promise<ApiResponse> =>
           'Waiting (TTFB)': ttfb,
           'Content Download': download,
         };
-      } else {
-        // Fallback simulated timing
-        const phases = ['DNS Lookup', 'TCP Handshake', 'SSL Handshake', 'Waiting (TTFB)', 'Content Download'];
-        let remaining = duration;
-        for (let i = 0; i < phases.length - 1; i++) {
-          const phaseTime = Math.random() * (remaining * 0.1);
-          timing[phases[i]] = phaseTime;
-          remaining -= phaseTime;
-        }
-        timing[phases[phases.length - 1]] = Math.max(0, remaining);
       }
+      // No entry means the server sent no Timing-Allow-Origin header, so per-phase
+      // timings are genuinely unavailable. Report nothing rather than inventing numbers.
     } catch {
-      // Ignore errors and keep timing empty or simulated
+      // Ignore errors and keep timing empty
     }
     
     return {
@@ -200,7 +196,7 @@ export const buildFinalRequest = (request: ApiRequest, data: Record<string,strin
                 if (request.auth.basicUser || request.auth.basicPass) {
                     const user = interpolateString(request.auth.basicUser || '', combinedVariables);
                     const pass = interpolateString(request.auth.basicPass || '', combinedVariables);
-                    authHeaders.push({ id: Date.now(), key: 'Authorization', value: `Basic ${btoa(`${user}:${pass}`)}`, enabled: true });
+                    authHeaders.push({ id: Date.now(), key: 'Authorization', value: `Basic ${base64Utf8(`${user}:${pass}`)}`, enabled: true });
                 }
                 break;
             case 'apiKey':

@@ -3,6 +3,7 @@ import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
 import { Sparkles, AlertTriangle } from '../icons';
 import { useToast } from '../../context/ToastContext';
+import { getApiKey } from '../../utils/apiKey';
 
 interface AiResponseInsightsModalProps {
   show: boolean;
@@ -41,8 +42,9 @@ export const AiResponseInsightsModal: React.FC<AiResponseInsightsModalProps> = (
       setIsLoading(true);
       setError(null);
 
-      if (!process.env.API_KEY) {
-        setError("Gemini API key is not available in the execution environment.");
+      const apiKey = getApiKey();
+      if (!apiKey) {
+        setError("Gemini API key is not set. Add it in Settings to use AI insights.");
         setIsLoading(false);
         return;
       }
@@ -59,13 +61,13 @@ export const AiResponseInsightsModal: React.FC<AiResponseInsightsModalProps> = (
             return;
         }
 
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const ai = new GoogleGenAI({ apiKey });
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: `Analyze the following JSON API response and provide a concise summary for a developer. Highlight the main entities, mention the count of items in any arrays, and point out any potential issues like empty arrays, null values, or unexpected data types. Format the output using markdown.\n\nJSON Response:\n\`\`\`json\n${parsedBody}\n\`\`\``
         });
 
-        setInsights(response.text);
+        setInsights(response.text ?? '');
       } catch (err: any) {
         console.error('AI insights generation failed:', err);
         if (err instanceof TypeError && err.message.includes('dynamically imported module')) {

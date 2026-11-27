@@ -1,5 +1,6 @@
-import React, { createContext, useState, useContext, useCallback } from 'react';
+import React, { createContext, useState, useContext, useCallback, useEffect } from 'react';
 import { ToastMessage } from '../types';
+import { STORAGE_ERROR_EVENT } from '../hooks/usePersistentState';
 
 interface ToastContextType {
   toasts: ToastMessage[];
@@ -39,6 +40,13 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const dismissToast = useCallback((id: number) => {
     removeToast(id);
   }, [removeToast]);
+
+  useEffect(() => {
+    const onStorageError = () =>
+      addToast('Could not save to browser storage — it may be full. Recent changes will be lost on reload.', 'error', 8000);
+    window.addEventListener(STORAGE_ERROR_EVENT, onStorageError);
+    return () => window.removeEventListener(STORAGE_ERROR_EVENT, onStorageError);
+  }, [addToast]);
   
   return (
     <ToastContext.Provider value={{ toasts, addToast, dismissToast }}>

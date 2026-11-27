@@ -7,7 +7,7 @@ interface SelectContextType {
   setIsOpen: (isOpen: boolean) => void;
   selectedValue: string;
   setSelectedValue: (value: string) => void;
-  triggerRef: React.RefObject<HTMLButtonElement>;
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
   selectedLabel: string;
   setSelectedLabel: (label: string) => void;
   onValueChange?: (value: string) => void;
@@ -107,9 +107,9 @@ export const SelectTrigger = React.forwardRef<HTMLButtonElement, React.ButtonHTM
   }
 );
 
-export const SelectValue: React.FC<{ placeholder?: string }> = ({ placeholder }) => {
+export const SelectValue: React.FC<{ placeholder?: string; className?: string }> = ({ placeholder, className = '' }) => {
   const { selectedValue, selectedLabel } = useSelect();
-  return <span className="truncate">{selectedLabel || selectedValue || placeholder}</span>;
+  return <span className={`truncate ${className}`}>{selectedLabel || selectedValue || placeholder}</span>;
 };
 
 export const SelectContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(

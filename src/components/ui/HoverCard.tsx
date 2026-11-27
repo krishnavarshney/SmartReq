@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 
 interface HoverCardContextType {
   isOpen: boolean;
-  triggerRef: React.RefObject<HTMLSpanElement> | null;
+  triggerRef: React.RefObject<HTMLSpanElement | null>;
   handleMouseEnter: () => void;
   handleMouseLeave: () => void;
 }

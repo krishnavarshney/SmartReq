@@ -38,8 +38,19 @@ class Expectation {
             }
         },
         include: (subset: any) => {
-            if(Array.isArray(this.value) && !this.value.some(item => this.isEqual(item, subset))) {
-                throw new Error(`expected ${JSON.stringify(this.value)} to include ${JSON.stringify(subset)}`);
+            const value = this.value;
+            let passed: boolean;
+            if (Array.isArray(value)) {
+                passed = value.some(item => this.isEqual(item, subset));
+            } else if (typeof value === 'string') {
+                passed = value.includes(String(subset));
+            } else if (value && typeof value === 'object') {
+                passed = Object.entries(subset ?? {}).every(([k, v]) => this.isEqual((value as any)[k], v));
+            } else {
+                passed = false;
+            }
+            if (!passed) {
+                throw new Error(`expected ${JSON.stringify(value)} to include ${JSON.stringify(subset)}`);
             }
         }
     }

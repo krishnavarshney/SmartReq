@@ -3,7 +3,7 @@ import { Spinner } from './Spinner';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   isLoading?: boolean;
-  variant?: 'primary' | 'secondary' | 'ghost' | 'destructive';
+  variant?: 'primary' | 'secondary' | 'ghost' | 'destructive' | 'outline';
   size?: 'sm' | 'md' | 'lg';
 }
 
@@ -16,6 +16,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       secondary: 'bg-secondary text-secondary-foreground elev-0 hover:bg-accent hover:elev-1 hover:-translate-y-[1px]',
       ghost: 'bg-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground',
       destructive: 'bg-destructive text-destructive-foreground elev-0 hover:bg-destructive/90 hover:elev-1 hover:-translate-y-[1px]',
+      outline: 'bg-transparent text-foreground border border-border hover:bg-accent hover:text-accent-foreground',
     };
 
     const sizeStyles = {

@@ -28,6 +28,7 @@ import { DiscoveryWorkspace } from './components/discovery/DiscoveryWorkspace';
 import { GoogleGenAI } from '@google/genai';
 import { startDiscovery } from './utils/discovery';
 import { interpolateString } from './utils/interpolation';
+import { getApiKey } from './utils/apiKey';
 import { DiscoveryProvider } from './context/DiscoveryContext';
 
 const AppContent: React.FC = () => {
@@ -380,8 +381,9 @@ const AppContent: React.FC = () => {
 
   const handleGenerateTests = useCallback(async () => {
     if (!activeTab?.latestResponse) return;
-    if (!(import.meta as any).env.VITE_GEMINI_API_KEY) {
-      addToast('Gemini API key is not configured. Set VITE_GEMINI_API_KEY in your .env.', 'error');
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      addToast('Gemini API key is not configured. Add it in Settings.', 'error');
       return;
     }
 
@@ -406,13 +408,13 @@ Write a comprehensive test suite. Include tests for status code, important heade
 Respond ONLY with the raw JavaScript code block. Do not include markdown fences like '''javascript or any other explanatory text.`;
 
     try {
-        const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.VITE_GEMINI_API_KEY });
+        const ai = new GoogleGenAI({ apiKey });
         const geminiResponse = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: prompt,
         });
 
-        const generatedScript = geminiResponse.text.trim();
+        const generatedScript = (geminiResponse.text ?? '').trim();
         if (activeRequest) {
             const currentScript = activeRequest.testScript || '';
             const newScript = currentScript ? `${currentScript}\n\n// AI Generated Tests\n${generatedScript}` : generatedScript;

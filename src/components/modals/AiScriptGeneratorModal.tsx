@@ -4,6 +4,7 @@ import { Button } from '../ui/Button';
 import { Sparkles, Wand2 } from '../icons';
 import { useToast } from '../../context/ToastContext';
 import { Spinner } from '../ui/Spinner';
+import { useApiKey } from '../../hooks/useApiKey';
 
 interface AiScriptGeneratorModalProps {
   show: boolean;
@@ -35,10 +36,11 @@ export const AiScriptGeneratorModal: React.FC<AiScriptGeneratorModalProps> = ({ 
   const [prompt, setPrompt] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const { addToast } = useToast();
+  const apiKey = useApiKey();
 
   const handleGenerate = async () => {
-    if (!process.env.API_KEY) {
-      addToast('Gemini API key is not available in the execution environment.', 'error');
+    if (!apiKey) {
+      addToast('Gemini API key is not set. Add it in Settings.', 'error');
       return;
     }
     if (!prompt.trim()) {
@@ -48,7 +50,7 @@ export const AiScriptGeneratorModal: React.FC<AiScriptGeneratorModalProps> = ({ 
     setIsLoading(true);
     try {
       const { GoogleGenAI } = await import('@google/genai');
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: prompt,
@@ -56,7 +58,7 @@ export const AiScriptGeneratorModal: React.FC<AiScriptGeneratorModalProps> = ({ 
           systemInstruction: getSystemInstruction(type),
         },
       });
-      const generatedScript = response.text.trim();
+      const generatedScript = (response.text ?? '').trim();
       onGenerate(generatedScript);
       onClose();
       addToast('AI script generated successfully!', 'success');
@@ -93,7 +95,7 @@ export const AiScriptGeneratorModal: React.FC<AiScriptGeneratorModalProps> = ({ 
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleGenerate} isLoading={isLoading} disabled={!process.env.API_KEY || isLoading}>
+          <Button onClick={handleGenerate} isLoading={isLoading} disabled={!apiKey || isLoading}>
             {isLoading ? <Spinner className="mr-2 h-4 w-4" /> : <Wand2 className="h-4 w-4 mr-2" />}
             Generate
           </Button>

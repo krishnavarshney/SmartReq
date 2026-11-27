@@ -4,6 +4,7 @@ import { DiscoverySession } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { startDiscovery } from '../utils/discovery';
 import { useToast } from './ToastContext';
+import { getApiKey } from '../utils/apiKey';
 
 interface DiscoveryContextType {
     session: DiscoverySession | null;
@@ -24,8 +25,8 @@ export const DiscoveryProvider: React.FC<{children: React.ReactNode}> = ({ child
             return;
         }
 
-        if (!process.env.API_KEY) {
-            addToast('Gemini API key is not available.', 'error');
+        if (!getApiKey()) {
+            addToast('Gemini API key is not available. Add it in Settings.', 'error');
             setSession({ id: uuidv4(), baseUrl, status: 'error', endpoints: [], log: [] });
             return;
         }

@@ -2,6 +2,7 @@ import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
 import { v4 as uuidv4 } from 'uuid';
 import { DiscoveredEndpoint, HttpMethod } from '../types';
 import { realApiCall } from '../api';
+import { getApiKey } from './apiKey';
 
 const COMMON_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'DELETE'];
 
@@ -21,7 +22,7 @@ async function extractLinksFromResponse(ai: GoogleGenAI, responseBody: string): 
             }
         });
 
-        const jsonString = response.text.trim();
+        const jsonString = (response.text ?? '').trim();
         const links = JSON.parse(jsonString);
         return Array.isArray(links) ? links.filter(l => typeof l === 'string') : [];
     } catch (error) {
@@ -43,7 +44,7 @@ async function generateOpenApiSpec(ai: GoogleGenAI, endpoints: DiscoveredEndpoin
         contents: `Based on this list of discovered API endpoints and example responses, generate a basic OpenAPI 3.0 specification in YAML format. Make educated guesses about path parameters (e.g., '/users/123' -> '/users/{id}'), query parameters, and data schemas based on the response bodies. Keep it concise. Endpoints: \`\`\`json\n${JSON.stringify(simplifiedEndpoints, null, 2)}\n\`\`\``,
     });
     
-    return response.text.replace(/```yaml|```/g, '').trim();
+    return (response.text ?? '').replace(/```yaml|```/g, '').trim();
 }
 
 
@@ -55,9 +56,10 @@ export async function* startDiscovery(
     endpoints?: DiscoveredEndpoint[];
     generatedSpec?: string;
 }> {
-    if (!process.env.API_KEY) throw new Error("API key is not configured.");
+    const apiKey = getApiKey();
+    if (!apiKey) throw new Error("API key is not configured. Add it in Settings.");
 
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey });
     const queue: string[] = ['/'];
     const visited = new Set<string>();
     let discoveredEndpoints: DiscoveredEndpoint[] = [];

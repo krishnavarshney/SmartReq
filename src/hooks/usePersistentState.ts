@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 
+export const STORAGE_ERROR_EVENT = 'smartreq:storage-error';
+
 export const usePersistentState = <T,>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] => {
   const getStoredValue = useCallback(() => {
     try {
@@ -19,6 +21,9 @@ export const usePersistentState = <T,>(key: string, initialValue: T): [T, React.
       window.localStorage.setItem(key, serializedValue);
     } catch (error) {
       console.error(`Error setting localStorage key “${key}”:`, error);
+      // Writing can fail on quota; the change stays in memory only. Tell the user
+      // rather than letting saved requests disappear silently on the next reload.
+      window.dispatchEvent(new CustomEvent(STORAGE_ERROR_EVENT, { detail: { key } }));
     }
   }, [key, storedValue]);
 

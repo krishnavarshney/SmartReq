@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 interface DropdownMenuContextType {
   isOpen: boolean;
   setIsOpen: (isOpen: boolean) => void;
-  triggerRef: React.RefObject<HTMLButtonElement>;
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
 }
 
 const DropdownMenuContext = createContext<DropdownMenuContextType | undefined>(undefined);

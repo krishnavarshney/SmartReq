@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/Tabs';
 import { Loader } from '../ui/Loader';
 import { useDiscovery } from '../../context/DiscoveryContext';
 import { useToast } from '../../context/ToastContext';
+import { useApiKey } from '../../hooks/useApiKey';
 
 const getMethodClass = (method: HttpMethod) => {
     switch(method) {
@@ -24,6 +25,7 @@ const getMethodClass = (method: HttpMethod) => {
 export const DiscoveryWorkspace: React.FC = () => {
     const { addToast } = useToast();
     const { session, start, stop } = useDiscovery();
+    const apiKey = useApiKey();
     const [baseUrl, setBaseUrl] = useState(session?.baseUrl || '');
 
     useEffect(() => {
@@ -82,7 +84,7 @@ export const DiscoveryWorkspace: React.FC = () => {
                 )}
             </div>
             <div className="flex-grow rounded-lg border border-border bg-card overflow-hidden">
-                {!(import.meta as any).env.VITE_GEMINI_API_KEY ? (
+                {!apiKey ? (
                      <EmptyState
                         icon={<AlertTriangle className="h-12 w-12 text-destructive" />}
                         title="API Key Not Configured"
