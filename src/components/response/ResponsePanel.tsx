@@ -1,31 +1,51 @@
-import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Papa from 'papaparse';
+import { ChevronsDownUp, ChevronsUpDown, GitCompareArrows, Regex, SendHorizontal } from 'lucide-react';
 import { SingleRequestLog } from '../../types';
 import { EmptyState } from '../ui/EmptyState';
-import { formatBytes } from '../../utils/formatters';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '../ui/HoverCard';
+import { Badge } from '../ui/Badge';
+import { Button, IconButton } from '../ui/Button';
+import { Input } from '../ui/Input';
+import { Tooltip, Kbd } from '../ui/Tooltip';
+import { SegmentedControl } from '../ui/SegmentedControl';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/Tabs';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger, DropdownMenuSeparator } from '../ui/DropdownMenu';
+import { Download, Search, WrapText, ChevronUp, ChevronDown, Copy, Check, X, Sparkles, TestTube2, Timer, Database, FileText, Table as TableIcon } from '../icons';
+import { useToast } from '../../context/ToastContext';
+import { getStatusTone } from '../../utils/http-ui';
+import { formatBytes, formatDuration } from '../../utils/formatters';
+import { exportDataAsCsv, exportDataAsXls } from '../../utils/export';
+import { useDebounce } from '../../hooks/useDebounce';
+import { CodeView, FoldCommand, SearchResults } from './CodeView';
+import { TableView, describeTableData } from './TableView';
+import { Breadcrumbs } from './Breadcrumbs';
+import { HtmlPreview } from './HtmlPreview';
+import { ImagePreview } from './ImagePreview';
+import { HeadersPanel } from './HeadersPanel';
+import { CookiesPanel } from './CookiesPanel';
+import { TestResultsPanel } from './TestResultsPanel';
+import { WaterfallPanel } from './WaterfallPanel';
+import { VisualizationPanel, findVisualizableData } from './VisualizationPanel';
 import { TimeMetrics } from './TimeMetrics';
 import { SizeMetrics } from './SizeMetrics';
-import { TestResultsPanel } from './TestResultsPanel';
-import { CookiesPanel } from './CookiesPanel';
-import { RawTextView } from './RawTextView';
-import { useToast } from '../../context/ToastContext';
-import { ResponseControls } from './ResponseControls';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/Tabs';
-import { Download, Rocket, Search, WrapText, History, Timer, Database, Asterisk, ChevronUp, ChevronDown } from '../icons';
-import { TableView } from './TableView';
-import { HtmlPreview } from './HtmlPreview';
-import { Input } from '../ui/Input';
-import { Tooltip } from '../ui/Tooltip';
-import { Button, IconButton } from '../ui/Button';
-import { Breadcrumbs } from './Breadcrumbs';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/DropdownMenu';
-import { exportDataAsCsv } from '../../utils/export';
-import { VisualizationPanel } from './VisualizationPanel';
-import { WaterfallPanel } from './WaterfallPanel';
-import { ResponseDiffModal } from '../modals/ResponseDiffModal';
+import { MetricPopover } from './MetricPopover';
 import { ResponsePanelSkeleton } from './ResponsePanelSkeleton';
+import { ResponseErrorView } from './ResponseErrorView';
+import { ResponseDiffModal } from '../modals/ResponseDiffModal';
 import { AiResponseInsightsModal } from '../modals/AiResponseInsightsModal';
-import { useDebounce } from '../../hooks/useDebounce';
+import {
+  BodyKind,
+  buildJsonLines,
+  buildTextLines,
+  dataUrlToBlob,
+  describeContentType,
+  detectBody,
+  downloadBlob,
+  getContentType,
+  hasTiming,
+  statusLabel,
+  suggestFilename,
+} from './utils';
 
 interface ResponsePanelProps {
   currentLog: SingleRequestLog | null;
@@ -35,448 +55,584 @@ interface ResponsePanelProps {
   isGeneratingTests: boolean;
 }
 
-type ViewMode = 'raw' | 'table' | 'preview' | 'image' | 'csv';
-type ContentType = 'json' | 'html' | 'xml' | 'text' | 'image' | 'csv';
+type Format = 'pretty' | 'raw' | 'table' | 'source' | 'preview' | 'image';
 
-const StatusBadge: React.FC<{ status: number, statusText: string }> = ({ status, statusText }) => {
-  if (status === 0) {
-      return <span className={`inline-block px-3 py-1 text-sm font-semibold rounded-full bg-muted text-muted-foreground`}>{statusText.toUpperCase()}</span>;
-  }
-  const isSuccess = status >= 200 && status < 300;
-  const isRedirect = status >= 300 && status < 400;
-  const isClientError = status >= 400 && status < 500;
-  
-  const colorClasses = isSuccess 
-      ? 'bg-success/10 text-success' 
-      : isClientError 
-      ? 'bg-warning/10 text-warning'
-      : isRedirect
-      ? 'bg-blue-500/10 text-blue-400'
-      : 'bg-destructive/10 text-destructive';
-
-  return <span className={`inline-block px-3 py-1 text-sm font-semibold rounded-full ${colorClasses}`}>{status} {statusText}</span>;
+const FORMAT_LABEL: Record<Format, string> = {
+  pretty: 'Pretty',
+  raw: 'Raw',
+  table: 'Table',
+  source: 'Source',
+  preview: 'Preview',
+  image: 'Image',
 };
 
-export const ResponsePanel: React.FC<ResponsePanelProps> = ({ currentLog, isLoading, responseHistory, onGenerateTests, isGeneratingTests }) => {
-  const [activeTab, setActiveTab] = useState('body');
-  const [searchTerm, setSearchTerm] = useState('');
-  const debouncedSearchTerm = useDebounce(searchTerm, 200);
-  const [wordWrap, setWordWrap] = useState(true);
-  const { addToast } = useToast();
+const FORMATS: Record<BodyKind, Format[]> = {
+  json: ['pretty', 'raw', 'table'],
+  html: ['source', 'preview'],
+  xml: ['source'],
+  csv: ['table', 'raw'],
+  image: ['image'],
+  text: ['raw'],
+  empty: [],
+};
 
-  const [viewMode, setViewMode] = useState<ViewMode>('raw');
-  const [contentType, setContentType] = useState<ContentType>('text');
-  const [dataPath, setDataPath] = useState<string[]>([]);
-  const [isDiffModalOpen, setIsDiffModalOpen] = useState(false);
-  const [isAiInsightsModalOpen, setIsAiInsightsModalOpen] = useState(false);
-  
-  const [isRegex, setIsRegex] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [matchCount, setMatchCount] = useState(0);
-  const [activeMatchIndex, setActiveMatchIndex] = useState(-1);
+const TEXT_FORMATS: Format[] = ['pretty', 'raw', 'source'];
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+
+/** Track an element's width so the panel can adapt to its own size, not the viewport's. */
+const useWidth = (ref: React.RefObject<HTMLElement | null>) => {
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return width;
+};
+
+const ToolbarButton: React.FC<{
+  label: string;
+  onClick: () => void;
+  pressed?: boolean;
+  shortcut?: string;
+  disabled?: boolean;
+  children: React.ReactNode;
+}> = ({ label, onClick, pressed, shortcut, disabled, children }) => (
+  <Tooltip content={label} shortcut={shortcut}>
+    <IconButton
+      size="sm"
+      aria-label={label}
+      aria-pressed={pressed}
+      onClick={onClick}
+      disabled={disabled}
+      className={`[&_svg]:h-3.5 [&_svg]:w-3.5 ${pressed ? '!bg-accent !text-foreground' : ''}`}
+    >
+      {children}
+    </IconButton>
+  </Tooltip>
+);
+
+export const ResponsePanel: React.FC<ResponsePanelProps> = ({ currentLog, isLoading, responseHistory, onGenerateTests, isGeneratingTests }) => {
+  const { addToast } = useToast();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const width = useWidth(rootRef);
+  const compact = width > 0 && width < 480;
 
   const response = currentLog?.response;
-  const prevResponseRef = useRef<typeof response | null>(null);
-  
-  const responseBodyString = useMemo(() => {
-    if (!response?.body) return '';
-    return typeof response.body === 'string' ? response.body : JSON.stringify(response.body, null, 2);
-  }, [response?.body]);
-  
-  const parsedBody = useMemo(() => {
-    if (!response?.body) return null;
-    if (typeof response.body === 'object' && response.body !== null) return response.body;
-    try {
-        return JSON.parse(responseBodyString);
-    } catch {
-        return responseBodyString;
-    }
-  }, [response?.body, responseBodyString]);
+  const contentType = getContentType(response?.headers);
+  const detected = useMemo(() => detectBody(response?.body, contentType), [response?.body, contentType]);
+  const kind = detected.kind;
+  const formats = FORMATS[kind];
 
-  const dataForView = useMemo(() => {
-    if (!parsedBody) return null;
-    try {
-        return dataPath.reduce((acc: any, key: string) => acc?.[key], parsedBody);
-    } catch (e) {
-        return { error: "Invalid path in data" };
-    }
-  }, [parsedBody, dataPath]);
-  
-  const isJsonDataForTable = useMemo(() => {
-      if (contentType !== 'json' || !parsedBody) return false;
-      const data = parsedBody;
-      return (Array.isArray(data)) || (typeof data === 'object' && data !== null && !Array.isArray(data));
-  }, [contentType, parsedBody]);
+  const [activeTab, setActiveTab] = useState('body');
+  const [format, setFormat] = useState<Format>(formats[0] ?? 'raw');
+  const [wrap, setWrap] = useState(true);
+  const [dataPath, setDataPath] = useState<string[]>([]);
+  const [foldCommand, setFoldCommand] = useState<FoldCommand | undefined>();
+  const [isDiffOpen, setIsDiffOpen] = useState(false);
+  const [isInsightsOpen, setIsInsightsOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  const viewOptions = useMemo(() => {
-      const options = [{ value: 'raw' as ViewMode, label: 'Raw' }];
-      if (contentType === 'json' && isJsonDataForTable) {
-          options.push({ value: 'table', label: 'Table' });
-      }
-      if (contentType === 'html') {
-          options.push({ value: 'preview', label: 'Preview' });
-      }
-      if (contentType === 'image') {
-          options.push({ value: 'image', label: 'Image' });
-      }
-      if (contentType === 'csv') {
-          options.push({ value: 'csv', label: 'CSV' });
-      }
-      return options;
-  }, [contentType, isJsonDataForTable]);
+  // Find bar
+  const [findOpen, setFindOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearch = useDebounce(searchTerm, 150);
+  const [isRegex, setIsRegex] = useState(false);
+  const [results, setResults] = useState<SearchResults>({ count: 0, error: null });
+  const [activeMatch, setActiveMatch] = useState(-1);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Loading timer
+  const [startedAt, setStartedAt] = useState<number | undefined>();
+  useEffect(() => {
+    if (isLoading) setStartedAt(Date.now());
+  }, [isLoading]);
+
+  // Reset per-response view state; keep the chosen format when the kind is unchanged.
+  const prevKind = useRef<BodyKind | null>(null);
+  useEffect(() => {
+    if (prevKind.current !== kind || !formats.includes(format)) setFormat(formats[0] ?? 'raw');
+    prevKind.current = kind;
+    setDataPath([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [response]);
+
+  const isTextFormat = TEXT_FORMATS.includes(format) && kind !== 'empty' && kind !== 'image';
+
+  const lines = useMemo(() => {
+    if (!isTextFormat) return [];
+    if (format === 'pretty' && kind === 'json') return buildJsonLines(detected.json);
+    if (format === 'source' && (kind === 'html' || kind === 'xml')) return buildTextLines(detected.text, 'markup');
+    return buildTextLines(detected.text);
+  }, [detected, format, kind, isTextFormat]);
+
+  const tableRoot = useMemo(() => {
+    if (kind === 'json') return detected.json;
+    if (kind === 'csv') {
+      const parsed = Papa.parse<Record<string, unknown>>(detected.text.trim(), { header: true, skipEmptyLines: true, dynamicTyping: true });
+      return parsed.data;
+    }
+    return null;
+  }, [detected, kind]);
+
+  const tableData = useMemo(() => {
+    let cur: any = tableRoot;
+    for (const seg of dataPath) {
+      if (cur === null || typeof cur !== 'object') return undefined;
+      cur = cur[seg];
+    }
+    return cur;
+  }, [tableRoot, dataPath]);
+
+  const visualizable = useMemo(() => kind === 'json' && findVisualizableData(detected.json).length > 0, [kind, detected]);
 
   useEffect(() => {
-    if (response !== prevResponseRef.current) {
-      let detectedContentType: ContentType = 'text';
-      if (currentLog?.response?.headers) {
-          const type = currentLog.response.headers['content-type'] || '';
-          if (type.startsWith('image/')) detectedContentType = 'image';
-          else if (type.includes('text/csv') || type.includes('application/csv')) detectedContentType = 'csv';
-          else if (type.includes('application/json')) detectedContentType = 'json';
-          else if (type.includes('text/html')) detectedContentType = 'html';
-          else if (type.includes('application/xml') || type.includes('text/xml')) detectedContentType = 'xml';
-      }
-      setContentType(detectedContentType);
-      setViewMode('raw');
-      setActiveTab('body');
-      setDataPath([]);
-      setSearchTerm('');
-      setMatchCount(0);
-      setActiveMatchIndex(-1);
-      setSearchError(null);
-      prevResponseRef.current = response || null;
-    }
-  }, [response, currentLog]);
+    if (activeTab === 'visualize' && !visualizable) setActiveTab('body');
+  }, [activeTab, visualizable]);
 
-  const testResults = response?.testResults || [];
-  const passedTests = testResults.filter(r => r.passed).length;
-  const cookies = response?.cookies || [];
-
-  const handleExport = () => {
-    if (!response) return;
-    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(responseBodyString)}`;
-    const link = document.createElement("a");
-    link.href = jsonString;
-    link.download = `response-${new Date().toISOString()}.json`;
-    link.click();
-    addToast('Response exported successfully!', 'success');
-  };
-
-  const handleCopy = () => {
-    if (!response) return;
-    navigator.clipboard.writeText(responseBodyString).then(() => {
-      addToast('Response body copied to clipboard!', 'success');
-    }, (err) => {
-      addToast('Failed to copy response body.', 'error');
-      console.error('Could not copy text: ', err);
-    });
-  };
-  
-  const handleDrillDown = (segments: string[]) => setDataPath(prev => [...prev, ...segments]);
-  const handlePathChange = (index: number) => setDataPath(prev => prev.slice(0, index + 1));
-  const handleGoToRoot = () => setDataPath([]);
-  
-  const handleExportTable = (fileType: 'csv' | 'xls') => {
-    if (!dataForView) {
-      addToast('No data to export.', 'error');
-      return;
-    }
-    const filename = `export-${new Date().toISOString()}.${fileType}`;
-    try {
-      exportDataAsCsv(dataForView, filename);
-      addToast('Table exported successfully!', 'success');
-    } catch (e: any) {
-      addToast(`Export failed: ${e.message}`, 'error');
-      console.error('Export failed', e);
-    }
-  };
-
-  const handleSearchResults = useCallback((results: { count: number; error: string | null }) => {
-    setSearchError(results.error);
-    setMatchCount(results.count);
-    setActiveMatchIndex(results.count > 0 ? 0 : -1);
+  const onSearchResults = useCallback((r: SearchResults) => {
+    setResults(r);
+    setActiveMatch(r.count > 0 ? 0 : -1);
   }, []);
 
-  const handleNextMatch = () => {
-      if (matchCount > 0) {
-          setActiveMatchIndex(prev => (prev + 1) % matchCount);
-      }
+  const openFind = useCallback(() => {
+    setFindOpen(true);
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }, []);
+
+  const closeFind = () => {
+    setFindOpen(false);
+    setSearchTerm('');
   };
 
-  const handlePrevMatch = () => {
-      if (matchCount > 0) {
-          setActiveMatchIndex(prev => (prev - 1 + matchCount) % matchCount);
-      }
+  const step = (dir: 1 | -1) => {
+    if (results.count === 0) return;
+    setActiveMatch((i) => (i + dir + results.count) % results.count);
   };
 
-  const renderContent = () => {
-    if (isLoading) {
-      return <ResponsePanelSkeleton />;
+  const onRootKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && activeTab === 'body' && isTextFormat) {
+      e.preventDefault();
+      openFind();
     }
+  };
 
-    if (!response) {
+  const bodyText = useCallback((): string => {
+    if (kind === 'json' && (format === 'pretty' || format === 'table')) {
+      try {
+        return JSON.stringify(format === 'table' ? tableData : detected.json, null, 2) ?? '';
+      } catch {
+        return detected.text;
+      }
+    }
+    return detected.text;
+  }, [kind, format, detected, tableData]);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(bodyText()).then(
+      () => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      },
+      () => addToast('Could not copy to the clipboard.', 'error')
+    );
+  };
+
+  const filename = suggestFilename(currentLog?.request?.url, kind, contentType);
+
+  const handleDownload = () => {
+    if (!response) return;
+    if (kind === 'image') {
+      downloadBlob(dataUrlToBlob(detected.text), filename);
+      return;
+    }
+    const mime = contentType.split(';')[0] || (kind === 'json' ? 'application/json' : 'text/plain');
+    downloadBlob(new Blob([kind === 'json' && format !== 'raw' ? JSON.stringify(detected.json, null, 2) : detected.text], { type: `${mime};charset=utf-8` }), filename);
+  };
+
+  const handleExport = (type: 'csv' | 'xls') => {
+    if (tableData === undefined || tableData === null) {
+      addToast('There is no table data to export.', 'error');
+      return;
+    }
+    const base = filename.replace(/\.[^.]+$/, '') + (dataPath.length ? `-${dataPath.join('.')}` : '');
+    try {
+      if (type === 'csv') exportDataAsCsv(tableData, `${base}.csv`);
+      else exportDataAsXls(tableData, `${base}.xls`);
+    } catch (e: any) {
+      addToast(`Export failed: ${e.message}`, 'error');
+    }
+  };
+
+  const otherHistory = useMemo(
+    () => (currentLog ? responseHistory.filter((h) => h && h.response && h.response !== currentLog.response && h.id !== currentLog.id) : []),
+    [responseHistory, currentLog]
+  );
+
+  // ---------------------------------------------------------------------------
+  // States without a response
+
+  const shell = (children: React.ReactNode) => (
+    <div ref={rootRef} className="relative flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-card" onKeyDown={onRootKeyDown}>
+      {children}
+    </div>
+  );
+
+  if (isLoading) {
+    return shell(
+      <>
+        <div className="absolute inset-x-0 top-0 z-10 h-0.5 overflow-hidden bg-primary/15" aria-hidden="true">
+          <div className="h-full w-1/3 animate-shimmer bg-primary" />
+        </div>
+        <ResponsePanelSkeleton startedAt={startedAt} />
+      </>
+    );
+  }
+
+  if (!response || !currentLog) {
+    return shell(
+      <>
+        <div className="flex h-10 flex-shrink-0 items-center border-b border-border px-3">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Response</span>
+        </div>
+        <EmptyState
+          icon={<SendHorizontal />}
+          title="No response yet"
+          message="Enter a URL and send the request. The status, body, headers and timing will appear here."
+        >
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            Send with <Kbd>{isMac ? '⌘' : 'Ctrl'}</Kbd>
+            <Kbd>Enter</Kbd>
+          </span>
+        </EmptyState>
+      </>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Status bar
+
+  const isNetworkError = response.status === 0;
+  const tone = getStatusTone(response.status);
+  const testResults = response.testResults || [];
+  const passed = testResults.filter((t) => t.passed).length;
+  const failed = testResults.length - passed;
+  const headerCount = Object.keys(response.headers || {}).length;
+  const receivedAt = currentLog.timestamp ? new Date(currentLog.timestamp) : null;
+
+  const statusBar = (
+    <div className="flex h-10 flex-shrink-0 items-center gap-1 border-b border-border pl-3 pr-1.5">
+      <Badge tone={tone} className="mr-1.5 !h-6 !px-2 !text-xs" title={receivedAt ? `Received ${receivedAt.toLocaleString()}` : undefined}>
+        {statusLabel(response.status, response.statusText)}
+      </Badge>
+      <MetricPopover label={`Response time ${formatDuration(response.duration)}. Show timing details`} content={<TimeMetrics timing={response.timing} total={response.duration} />}>
+        <Timer className="h-3.5 w-3.5" aria-hidden="true" />
+        <span className="font-mono text-foreground">{formatDuration(response.duration)}</span>
+      </MetricPopover>
+      {!isNetworkError && (
+        <MetricPopover
+          label={`Response size ${formatBytes(response.size?.total || 0)}. Show size details`}
+          content={<SizeMetrics requestSize={currentLog.request?.size} responseSize={response.size} />}
+        >
+          <Database className="h-3.5 w-3.5" aria-hidden="true" />
+          <span className="font-mono text-foreground">{formatBytes(response.size?.total || 0)}</span>
+        </MetricPopover>
+      )}
+      <span className="flex-1" />
+      {otherHistory.length > 0 && (
+        <Tooltip content={`Compare with ${otherHistory.length} previous response${otherHistory.length === 1 ? '' : 's'}`}>
+          {compact ? (
+            <IconButton size="sm" aria-label="Compare with previous responses" onClick={() => setIsDiffOpen(true)}>
+              <GitCompareArrows className="h-3.5 w-3.5" />
+            </IconButton>
+          ) : (
+            <Button size="sm" variant="ghost" onClick={() => setIsDiffOpen(true)}>
+              <GitCompareArrows className="h-3.5 w-3.5" />
+              Compare
+            </Button>
+          )}
+        </Tooltip>
+      )}
+      {!isNetworkError && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="ghost" aria-label="AI actions" className={compact ? '!px-2' : ''}>
+              {isGeneratingTests ? null : <Sparkles className="h-3.5 w-3.5" />}
+              {isGeneratingTests ? <span className="text-xs">Generating…</span> : !compact && 'AI'}
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="w-60">
+            <DropdownMenuLabel>AI assist</DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => setIsInsightsOpen(true)} disabled={kind === 'empty' || kind === 'image'}>
+              <Sparkles />
+              Explain this response
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onGenerateTests} disabled={isGeneratingTests}>
+              <TestTube2 />
+              Generate tests from response
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </div>
+  );
+
+  const modals = (
+    <>
+      {isDiffOpen && <ResponseDiffModal currentResponse={response} currentLogId={currentLog.id} currentTimestamp={currentLog.timestamp} history={otherHistory} onClose={() => setIsDiffOpen(false)} />}
+      {isInsightsOpen && (
+        <AiResponseInsightsModal
+          show={isInsightsOpen}
+          onClose={() => setIsInsightsOpen(false)}
+          responseBody={detected.text}
+          status={response.status}
+          contentType={contentType}
+        />
+      )}
+    </>
+  );
+
+  if (isNetworkError) {
+    return shell(
+      <>
+        {statusBar}
+        <ResponseErrorView response={response} request={currentLog.request} />
+        {modals}
+      </>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Body
+
+  const showFind = findOpen && isTextFormat;
+  const typeLabel = describeContentType(contentType, kind);
+
+  const bodyToolbar = kind !== 'empty' && (
+    <div className="flex h-10 flex-shrink-0 items-center gap-1 border-b border-border px-2">
+      {formats.length > 1 ? (
+        <SegmentedControl
+          size="sm"
+          aria-label="Body format"
+          value={format}
+          onChange={(v) => setFormat(v as Format)}
+          options={formats.map((f) => ({ value: f, label: FORMAT_LABEL[f] }))}
+        />
+      ) : null}
+      {(!compact || formats.length <= 1) && (
+        <span className="ml-1.5 truncate font-mono text-[11px] text-muted-foreground" title={contentType || undefined}>
+          {typeLabel}
+        </span>
+      )}
+      <span className="flex-1" />
+      {format === 'pretty' && kind === 'json' && !compact && (
+        <>
+          <ToolbarButton label="Expand all" onClick={() => setFoldCommand({ type: 'expand', nonce: Date.now() })}>
+            <ChevronsUpDown />
+          </ToolbarButton>
+          <ToolbarButton label="Collapse all" onClick={() => setFoldCommand({ type: 'collapse', nonce: Date.now() })}>
+            <ChevronsDownUp />
+          </ToolbarButton>
+          <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
+        </>
+      )}
+      {isTextFormat && (
+        <>
+          <ToolbarButton label="Search body" shortcut={`${isMac ? '⌘' : 'Ctrl'} F`} pressed={showFind} onClick={() => (showFind ? closeFind() : openFind())}>
+            <Search />
+          </ToolbarButton>
+          <ToolbarButton label={wrap ? 'Disable line wrap' : 'Wrap long lines'} pressed={wrap} onClick={() => setWrap((w) => !w)}>
+            <WrapText />
+          </ToolbarButton>
+        </>
+      )}
+      {format === 'table' && (
+        <DropdownMenu>
+          <Tooltip content="Export table">
+            <DropdownMenuTrigger asChild>
+              <IconButton size="sm" aria-label="Export table" className="[&_svg]:h-3.5 [&_svg]:w-3.5" disabled={tableData === undefined}>
+                <TableIcon />
+              </IconButton>
+            </DropdownMenuTrigger>
+          </Tooltip>
+          <DropdownMenuContent className="w-52">
+            <DropdownMenuLabel>Export {dataPath.length ? 'this level' : 'table'}</DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => handleExport('csv')}>
+              <FileText />
+              CSV (.csv)
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleExport('xls')}>
+              <TableIcon />
+              Excel (.xls)
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      {kind !== 'image' && (
+        <ToolbarButton label={copied ? 'Copied' : format === 'table' && dataPath.length ? 'Copy this level as JSON' : 'Copy body'} onClick={handleCopy}>
+          {copied ? <Check /> : <Copy />}
+        </ToolbarButton>
+      )}
+      <ToolbarButton label={`Download ${filename}`} onClick={handleDownload}>
+        <Download />
+      </ToolbarButton>
+    </div>
+  );
+
+  const findBar = showFind && (
+    <div className="flex h-10 flex-shrink-0 items-center gap-1 border-b border-border bg-muted/30 px-2">
+      <div className="relative min-w-0 flex-1">
+        <Input
+          ref={searchInputRef}
+          size="sm"
+          icon={<Search />}
+          placeholder={isRegex ? 'Regular expression' : 'Find in body'}
+          aria-label="Find in body"
+          value={searchTerm}
+          invalid={!!results.error}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              step(e.shiftKey ? -1 : 1);
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              closeFind();
+            }
+          }}
+          className="!pr-24 font-mono"
+        />
+        {debouncedSearch && (
+          <span
+            className={`pointer-events-none absolute inset-y-0 right-2 flex items-center text-[11px] tabular-nums ${
+              results.error || results.count === 0 ? 'text-destructive-text' : 'text-muted-foreground'
+            }`}
+            aria-live="polite"
+          >
+            {results.error ? 'Invalid' : results.count === 0 ? 'No results' : `${activeMatch + 1} of ${results.count}${results.capped ? '+' : ''}`}
+          </span>
+        )}
+      </div>
+      <ToolbarButton label="Use regular expression" pressed={isRegex} onClick={() => setIsRegex((r) => !r)}>
+        <Regex />
+      </ToolbarButton>
+      <ToolbarButton label="Previous match" shortcut="⇧ Enter" disabled={results.count === 0} onClick={() => step(-1)}>
+        <ChevronUp />
+      </ToolbarButton>
+      <ToolbarButton label="Next match" shortcut="Enter" disabled={results.count === 0} onClick={() => step(1)}>
+        <ChevronDown />
+      </ToolbarButton>
+      <ToolbarButton label="Close search" shortcut="Esc" onClick={closeFind}>
+        <X />
+      </ToolbarButton>
+    </div>
+  );
+
+  const renderBody = () => {
+    if (kind === 'empty') {
       return (
-         <EmptyState 
-            icon={<Rocket className="h-12 w-12 text-muted-foreground mb-4 stroke-1" />}
-            title="Ready to Send"
-            message="Execute a request to view the response here."
+        <EmptyState
+          compact
+          icon={<FileText />}
+          title="Empty body"
+          message={response.status === 204 || response.status === 304 ? `${statusLabel(response.status, response.statusText)} responses carry no body.` : 'The server returned no content.'}
         />
       );
     }
-    
+    if (format === 'image') return <ImagePreview src={detected.text} contentType={contentType} size={response.size?.body} />;
+    if (format === 'preview') return <HtmlPreview html={detected.text} baseUrl={currentLog.request?.url} />;
+    if (format === 'table') {
+      const shape = describeTableData(tableData);
+      return (
+        <div className="flex h-full min-h-0 flex-col">
+          {(kind === 'json' || shape) && (
+            <Breadcrumbs
+              path={dataPath}
+              onPathClick={(i) => setDataPath((p) => p.slice(0, i + 1))}
+              onRootClick={() => setDataPath([])}
+              trailing={shape}
+            />
+          )}
+          <div className="min-h-0 flex-1">
+            <TableView data={tableData} onDrillDown={kind === 'json' ? (segs) => setDataPath((p) => [...p, ...segs]) : undefined} />
+          </div>
+        </div>
+      );
+    }
     return (
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-        <div className="flex items-center justify-between border-b border-border px-2 flex-shrink-0 sticky top-0 z-10 bg-card">
-            <TabsList>
-                <TabsTrigger value="body">Body</TabsTrigger>
-                <TabsTrigger value="headers" badge={Object.keys(response.headers).length}>Headers</TabsTrigger>
-                {cookies.length > 0 && <TabsTrigger value="cookies" badge={cookies.length}>Cookies</TabsTrigger>}
-                {testResults.length > 0 && <TabsTrigger value="tests" badge={`${passedTests}/${testResults.length}`}>Tests</TabsTrigger>}
-                <TabsTrigger value="visualize">Visualize</TabsTrigger>
-                <TabsTrigger value="timeline">Timeline</TabsTrigger>
-            </TabsList>
-            <div className="flex items-center gap-1 p-1">
-                {activeTab === 'body' && viewMode === 'raw' && (
-                    <div className="flex items-center gap-2 bg-muted p-1 rounded-md border border-border">
-                        <div className="relative">
-                            <Tooltip content={searchError}>
-                                <Input 
-                                    type="text" 
-                                    placeholder="Search" 
-                                    className={`py-1 pl-8 pr-20 w-48 text-sm h-8 bg-background ${searchError ? 'border-destructive ring-destructive ring-1' : 'border-border'}`} 
-                                    value={searchTerm}
-                                    onChange={(e) => setSearchTerm(e.target.value)}
-                                />
-                             </Tooltip>
-                            <div className="absolute inset-y-0 left-0 flex items-center pl-2.5 pointer-events-none">
-                                <Search className="h-4 w-4 text-muted-foreground" />
-                            </div>
-                            {searchTerm && !searchError && (
-                                <div className="absolute inset-y-0 right-0 flex items-center pr-2 text-xs text-muted-foreground">
-                                    {matchCount > 0 ? `${activeMatchIndex + 1} / ${matchCount}` : 'No results'}
-                                </div>
-                            )}
-                        </div>
-                        <Tooltip content="Use Regex">
-                            <IconButton 
-                                size="sm" 
-                                variant={isRegex ? "secondary" : "ghost"}
-                                onClick={() => setIsRegex(!isRegex)}
-                            >
-                                <Asterisk className="h-4 w-4" />
-                            </IconButton>
-                        </Tooltip>
-                        <IconButton size="sm" variant="ghost" onClick={handlePrevMatch} disabled={matchCount === 0}>
-                            <ChevronUp className="h-4 w-4" />
-                        </IconButton>
-                        <IconButton size="sm" variant="ghost" onClick={handleNextMatch} disabled={matchCount === 0}>
-                            <ChevronDown className="h-4 w-4" />
-                        </IconButton>
-                         <Tooltip content="Toggle Word Wrap">
-                            <IconButton 
-                                size="sm" 
-                                variant={wordWrap ? "secondary" : "ghost"}
-                                onClick={() => setWordWrap(!wordWrap)}
-                            >
-                                <WrapText className="h-4 w-4" />
-                            </IconButton>
-                        </Tooltip>
-                    </div>
-                )}
-                {activeTab === 'body' && viewMode === 'table' && dataForView && (
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                        <Button size="sm" variant="secondary" className="h-8">
-                            <Download className="h-4 w-4 mr-2" />
-                            Export
-                        </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent>
-                        <DropdownMenuItem onClick={() => handleExportTable('csv')}>
-                            Export as CSV
-                        </DropdownMenuItem>
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                )}
-            </div>
-        </div>
-        <div className="overflow-auto flex-grow">
-           <TabsContent value="body" className="h-full flex flex-col">
-               <div className="flex-grow overflow-auto">
-                    {viewMode === 'raw' && (
-                        <RawTextView 
-                            text={responseBodyString} 
-                            searchTerm={debouncedSearchTerm} 
-                            wordWrap={wordWrap} 
-                            isRegex={isRegex}
-                            activeMatchIndex={activeMatchIndex}
-                            onSearchResults={handleSearchResults}
-                        />
-                    )}
-                    {viewMode === 'table' && (
-                        <div className="h-full flex flex-col">
-                            {dataPath.length > 0 && (
-                                <Breadcrumbs path={dataPath} onPathClick={handlePathChange} onRootClick={handleGoToRoot} />
-                            )}
-                            <TableView data={dataForView} onDrillDown={handleDrillDown} />
-                        </div>
-                    )}
-                    {viewMode === 'preview' && <HtmlPreview html={responseBodyString} />}
-                    {viewMode === 'image' && typeof response?.body === 'string' && response.body.startsWith('data:image') && (
-                        <div className="p-4">
-                            <img src={response.body} alt="Response" className="max-w-full h-auto rounded border border-border" />
-                        </div>
-                    )}
-                    {viewMode === 'csv' && (
-                        <div className="p-4 overflow-auto">
-                            <table className="w-full text-sm">
-                                <tbody>
-                                {responseBodyString.split('\n').filter(r => r.length > 0).map((row, i) => (
-                                    <tr key={i} className="border-b border-border/50">
-                                        {row.split(',').map((cell, j) => (
-                                            <td key={j} className="p-2 font-mono whitespace-pre">{cell}</td>
-                                        ))}
-                                    </tr>
-                                ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-               </div>
-          </TabsContent>
-          <TabsContent value="headers">
-             <div className="font-mono text-sm space-y-1 p-4">
-                {Object.entries(response.headers).map(([key, value]) => (
-                    <div key={key} className="flex items-start">
-                        <span className="text-sky-400 mr-2 flex-shrink-0">{key}:</span>
-                        <span className="text-amber-400 break-all">{String(value)}</span>
-                    </div>
-                ))}
-            </div>
-          </TabsContent>
-          <TabsContent value="cookies"><CookiesPanel cookies={cookies} /></TabsContent>
-          <TabsContent value="tests"><TestResultsPanel results={testResults} /></TabsContent>
-          <TabsContent value="visualize"><VisualizationPanel data={response.body} /></TabsContent>
-          <TabsContent value="timeline"><WaterfallPanel timing={response.timing} total={response.duration} /></TabsContent>
-        </div>
-      </Tabs>
+      <CodeView
+        lines={lines}
+        wrap={wrap}
+        foldable={format === 'pretty' && kind === 'json'}
+        searchTerm={showFind ? debouncedSearch : ''}
+        isRegex={isRegex}
+        activeMatchIndex={activeMatch}
+        onSearchResults={onSearchResults}
+        foldCommand={foldCommand}
+        ariaLabel={`Response body, ${FORMAT_LABEL[format]}`}
+      />
     );
   };
-  
-  const headerMetrics = response && !isLoading && currentLog && (
-    <div key={currentLog.id} className="grid grid-cols-1 sm:grid-cols-3 gap-2 md:gap-4 text-sm animate-fade-in w-full max-w-lg">
-        <div className="p-3 rounded-lg bg-card flex flex-col items-center justify-center text-center">
-            <div className="text-xs text-muted-foreground mb-1">Status</div>
-            <div className="font-semibold text-base">
-                <StatusBadge status={response.status} statusText={response.statusText} />
-            </div>
+
+  const testsBadge =
+    testResults.length > 0 ? (
+      <span className={`tabular-nums ${failed ? 'text-destructive-text' : 'text-success-text'}`}>
+        {passed}/{testResults.length}
+      </span>
+    ) : undefined;
+
+  return shell(
+    <>
+      {statusBar}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col">
+        <div className="no-scrollbar flex-shrink-0 overflow-x-auto overflow-y-hidden shadow-[inset_0_-1px_0_hsl(var(--border))]">
+          <TabsList aria-label="Response sections" className="!border-b-0 px-1.5 [&>button]:!mb-0">
+            <TabsTrigger value="body">Body</TabsTrigger>
+            <TabsTrigger value="headers" badge={headerCount || undefined}>
+              Headers
+            </TabsTrigger>
+            <TabsTrigger value="cookies" badge={response.cookies?.length || undefined}>
+              Cookies
+            </TabsTrigger>
+            <TabsTrigger value="tests" badge={testsBadge}>
+              Tests
+            </TabsTrigger>
+            <TabsTrigger value="timeline" title={hasTiming(response.timing) ? undefined : 'Timing breakdown unavailable for this response'}>
+              Timeline
+            </TabsTrigger>
+            {visualizable && <TabsTrigger value="visualize">Visualize</TabsTrigger>}
+          </TabsList>
         </div>
-
-        <HoverCard>
-            <HoverCardTrigger>
-                <div className="p-3 rounded-lg bg-card cursor-pointer hover:bg-muted transition-colors flex flex-col items-center justify-center">
-                    <div className="text-xs text-muted-foreground mb-1">Time</div>
-                    <div className="font-bold text-lg text-foreground flex items-center justify-center gap-1.5">
-                        <Timer className="h-4 w-4" />
-                        {response.duration.toFixed(0)} ms
-                    </div>
-                </div>
-            </HoverCardTrigger>
-            <HoverCardContent><TimeMetrics timing={response.timing} total={response.duration} /></HoverCardContent>
-        </HoverCard>
-
-        <HoverCard>
-            <HoverCardTrigger>
-                 <div className="p-3 rounded-lg bg-card cursor-pointer hover:bg-muted transition-colors flex flex-col items-center justify-center">
-                    <div className="text-xs text-muted-foreground mb-1">Size</div>
-                    <div className="font-bold text-lg text-foreground flex items-center justify-center gap-1.5">
-                      <Database className="h-4 w-4" />
-                      {formatBytes(response.size?.total || 0)}
-                    </div>
-                </div>
-            </HoverCardTrigger>
-            <HoverCardContent><SizeMetrics requestSize={currentLog.request.size} responseSize={response.size} /></HoverCardContent>
-        </HoverCard>
-    </div>
-  );
-
-  const loadingIndicator = (
-    <div className="flex items-center justify-center gap-3 text-sm">
-      <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-      <span className="text-muted-foreground">Loading response...</span>
-    </div>
-  );
-
-  return (
-    <div className="h-full flex flex-col rounded-lg overflow-auto bg-card border border-border relative">
-        {/* Progress Bar */}
-        {isLoading && (
-          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-primary via-primary/80 to-primary/40 overflow-hidden z-10">
-            <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-white/40 to-transparent"
-                 style={{
-                   animation: 'shimmer 1.5s ease-in-out infinite'
-                 }}
-            />
-          </div>
+        <TabsContent value="body" className="flex min-h-0 flex-1 flex-col">
+          {bodyToolbar}
+          {findBar}
+          <div className="min-h-0 flex-1">{renderBody()}</div>
+        </TabsContent>
+        <TabsContent value="headers" className="min-h-0 flex-1">
+          <HeadersPanel headers={response.headers || {}} requestUrl={currentLog.request?.url} />
+        </TabsContent>
+        <TabsContent value="cookies" className="min-h-0 flex-1 overflow-auto">
+          <CookiesPanel cookies={response.cookies || []} />
+        </TabsContent>
+        <TabsContent value="tests" className="min-h-0 flex-1">
+          <TestResultsPanel results={testResults} onGenerateTests={onGenerateTests} isGeneratingTests={isGeneratingTests} />
+        </TabsContent>
+        <TabsContent value="timeline" className="min-h-0 flex-1 overflow-auto">
+          <WaterfallPanel timing={response.timing} total={response.duration} />
+        </TabsContent>
+        {visualizable && (
+          <TabsContent value="visualize" className="min-h-0 flex-1">
+            <VisualizationPanel data={detected.json} />
+          </TabsContent>
         )}
-        
-        <div className="flex items-center justify-between p-3 md:p-4 border-b border-border flex-shrink-0 min-h-[72px] flex-wrap gap-2">
-            <div className="flex items-center gap-2 self-start mt-1.5 order-2 md:order-1">
-                <div className="flex items-center gap-2">
-                    {viewOptions.length > 1 && (
-                        <div className="flex items-center gap-1 p-1 bg-muted rounded-md">
-                            {viewOptions.map(opt => (
-                                <Tooltip content={opt.label} key={opt.value}>
-                                    <button
-                                        onClick={() => setViewMode(opt.value)}
-                                        className={`px-2 py-1 text-xs font-semibold rounded ${viewMode === opt.value ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-background'}`}
-                                    >
-                                        {opt.label}
-                                    </button>
-                                </Tooltip>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            </div>
-            <div className="flex-grow flex justify-center px-0 md:px-4 order-1 md:order-2 w-full md:w-auto">
-              {isLoading ? loadingIndicator : headerMetrics}
-            </div>
-            <div className="self-start mt-1.5 flex items-center gap-1 order-3">
-                {responseHistory.length > 1 && (
-                    <Button onClick={() => setIsDiffModalOpen(true)} size="sm" variant="secondary" className="h-8">
-                        <History className="h-4 w-4 mr-2" />
-                        Compare
-                    </Button>
-                )}
-                {response && response.status > 0 && (
-                  <ResponseControls 
-                    onCopy={handleCopy} 
-                    onExport={handleExport} 
-                    onAiInsights={() => setIsAiInsightsModalOpen(true)} 
-                    onGenerateTests={onGenerateTests}
-                    isGeneratingTests={isGeneratingTests}
-                  />
-                )}
-            </div>
-        </div>
-        <div className="flex-grow overflow-y-auto max-h-[500px]">
-             {renderContent()}
-        </div>
-        {isDiffModalOpen && currentLog && (
-            <ResponseDiffModal 
-                currentResponse={currentLog.response}
-                history={responseHistory}
-                onClose={() => setIsDiffModalOpen(false)}
-            />
-        )}
-        {isAiInsightsModalOpen && responseBodyString && (
-            <AiResponseInsightsModal
-                show={isAiInsightsModalOpen}
-                onClose={() => setIsAiInsightsModalOpen(false)}
-                responseBody={responseBodyString}
-            />
-        )}
-    </div>
+      </Tabs>
+      {modals}
+    </>
   );
 };

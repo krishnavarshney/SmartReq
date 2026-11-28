@@ -1,37 +1,68 @@
 import React from 'react';
+import { Cookie } from 'lucide-react';
 import { ResponseCookie } from '../../types';
 import { EmptyState } from '../ui/EmptyState';
+import { Badge } from '../ui/Badge';
 
 interface CookiesPanelProps {
     cookies: ResponseCookie[];
 }
 
+/**
+ * Browsers never expose Set-Cookie to fetch() (it is a forbidden response
+ * header), so an empty list says nothing about what the server sent.
+ */
 export const CookiesPanel: React.FC<CookiesPanelProps> = ({ cookies }) => {
     if (cookies.length === 0) {
-        return <EmptyState message="No cookies were set in this response." />;
+        return (
+            <EmptyState
+                icon={<Cookie />}
+                title="Cookies aren't visible to browser requests"
+                message={
+                    <>
+                        Browsers hide <code className="rounded bg-muted px-1 font-mono text-[12px] text-foreground">Set-Cookie</code> response headers from
+                        JavaScript, so SmartReq can't show cookies this response set, even though the browser may have stored them. Check the Network panel in
+                        your browser's DevTools to see them.
+                    </>
+                }
+            />
+        );
     }
-    
-    const headers = ['Name', 'Value', 'Domain', 'Path', 'Expires', 'HttpOnly', 'Secure', 'SameSite'];
+
+    const cell = 'h-8 whitespace-nowrap border-b border-border/60 px-3 align-middle';
+    const head = 'sticky top-0 z-[1] h-8 whitespace-nowrap border-b border-border bg-card px-3 text-left text-[11px] font-medium text-muted-foreground';
 
     return (
-         <div className="overflow-auto h-full">
-            <table className="w-full text-sm text-left text-muted-foreground">
-                <thead className="text-xs text-muted-foreground uppercase bg-muted sticky top-0 z-10">
+        <div className="h-full min-h-0 overflow-auto">
+            <table className="min-w-full border-separate border-spacing-0 text-xs">
+                <thead>
                     <tr>
-                        {headers.map(header => <th key={header} scope="col" className="px-4 py-2 font-semibold">{header}</th>)}
+                        {['Name', 'Value', 'Domain', 'Path', 'Expires', 'Flags'].map((h) => (
+                            <th key={h} scope="col" className={head}>
+                                {h}
+                            </th>
+                        ))}
                     </tr>
                 </thead>
-                <tbody className="divide-y divide-border">
+                <tbody className="font-mono">
                     {cookies.map((cookie) => (
-                        <tr key={cookie.name} className="hover:bg-muted">
-                            <td className="px-4 py-2 font-medium text-foreground">{cookie.name}</td>
-                            <td className="px-4 py-2 max-w-sm break-all">{cookie.value}</td>
-                            <td className="px-4 py-2">{cookie.domain || 'N/A'}</td>
-                            <td className="px-4 py-2">{cookie.path || 'N/A'}</td>
-                            <td className="px-4 py-2">{cookie.expires ? new Date(cookie.expires).toLocaleString() : 'Session'}</td>
-                            <td className="px-4 py-2">{String(cookie.httpOnly)}</td>
-                            <td className="px-4 py-2">{String(cookie.secure)}</td>
-                            <td className="px-4 py-2">{cookie.sameSite || 'N/A'}</td>
+                        <tr key={`${cookie.name}-${cookie.path}-${cookie.domain}`} className="hover:[&>td]:bg-accent/50">
+                            <td className={`${cell} text-foreground`}>{cookie.name}</td>
+                            <td className={`${cell} max-w-xs truncate text-muted-foreground`} title={cookie.value}>
+                                {cookie.value}
+                            </td>
+                            <td className={`${cell} text-muted-foreground`}>{cookie.domain || '—'}</td>
+                            <td className={`${cell} text-muted-foreground`}>{cookie.path || '—'}</td>
+                            <td className={`${cell} text-muted-foreground`}>
+                                {cookie.expires ? (isNaN(Date.parse(cookie.expires)) ? cookie.expires : new Date(cookie.expires).toLocaleString()) : 'Session'}
+                            </td>
+                            <td className={`${cell} font-sans`}>
+                                <span className="flex gap-1">
+                                    {cookie.httpOnly && <Badge>HttpOnly</Badge>}
+                                    {cookie.secure && <Badge>Secure</Badge>}
+                                    {cookie.sameSite && <Badge>SameSite={cookie.sameSite}</Badge>}
+                                </span>
+                            </td>
                         </tr>
                     ))}
                 </tbody>

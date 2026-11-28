@@ -1,119 +1,285 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { KeyRound, RefreshCw } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
-import { Sparkles, AlertTriangle } from '../icons';
+import { Sparkles, AlertTriangle, Copy, Check, Settings } from '../icons';
+import { useApiKey } from '../../hooks/useApiKey';
+import { useApp } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
-import { getApiKey } from '../../utils/apiKey';
 
 interface AiResponseInsightsModalProps {
   show: boolean;
   onClose: () => void;
   responseBody: string;
+  status?: number;
+  contentType?: string;
 }
 
-const escapeHtml = (unsafe: string) => {
-  return unsafe
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
+const MAX_BODY_CHARS = 30_000;
 
-const simpleMarkdownToHtml = (text: string) => {
-    if (!text) return '';
-    return escapeHtml(text)
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/`(.*?)`/g, '<code class="bg-muted px-1 rounded-sm font-mono">$1</code>')
-        .replace(/\n/g, '<br />');
+type State = { kind: 'idle' } | { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'done'; text: string };
+
+// ---------------------------------------------------------------------------
+// Minimal, safe markdown -> React (no HTML injection).
+
+const renderInline = (text: string, keyBase: string): React.ReactNode[] => {
+  const out: React.ReactNode[] = [];
+  const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*|_[^_\s][^_]*_)/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let i = 0;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const tok = m[0];
+    const key = `${keyBase}-${i++}`;
+    if (tok.startsWith('`')) out.push(<code key={key} className="rounded bg-muted px-1 py-px font-mono text-[12px] text-foreground">{tok.slice(1, -1)}</code>);
+    else if (tok.startsWith('**')) out.push(<strong key={key} className="font-semibold text-foreground">{tok.slice(2, -2)}</strong>);
+    else out.push(<em key={key}>{tok.slice(1, -1)}</em>);
+    last = m.index + tok.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
 };
 
-export const AiResponseInsightsModal: React.FC<AiResponseInsightsModalProps> = ({ show, onClose, responseBody }) => {
-  const [insights, setInsights] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const { addToast } = useToast();
+const Markdown: React.FC<{ text: string }> = ({ text }) => {
+  const blocks: React.ReactNode[] = [];
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  let i = 0;
+  let k = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {
+      const code: string[] = [];
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++]);
+      i++;
+      blocks.push(
+        <pre key={k++} className="overflow-x-auto rounded-md border border-border bg-muted/60 p-3 font-mono text-xs leading-5 text-foreground">
+          {code.join('\n')}
+        </pre>
+      );
+      continue;
+    }
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      const level = h[1].length;
+      blocks.push(
+        <h4 key={k++} className={`${level <= 2 ? 'text-sm' : 'text-[13px]'} mt-1 font-semibold text-foreground`}>
+          {renderInline(h[2], `h${k}`)}
+        </h4>
+      );
+      i++;
+      continue;
+    }
+    if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
+      const ordered = /^\s*\d+[.)]/.test(line);
+      const items: { depth: number; text: string }[] = [];
+      while (i < lines.length && /^\s*([-*+]|\d+[.)])\s+/.test(lines[i])) {
+        const m = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(lines[i])!;
+        items.push({ depth: Math.min(2, Math.floor(m[1].length / 2)), text: m[3] });
+        i++;
+      }
+      const List = ordered ? 'ol' : 'ul';
+      blocks.push(
+        <List key={k++} className={`space-y-1 ${ordered ? 'list-decimal' : 'list-disc'} pl-5 marker:text-muted-foreground`}>
+          {items.map((it, j) => (
+            <li key={j} style={{ marginLeft: it.depth * 16 }}>
+              {renderInline(it.text, `l${k}-${j}`)}
+            </li>
+          ))}
+        </List>
+      );
+      continue;
+    }
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+    const para: string[] = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\s*```|\s*([-*+]|\d+[.)])\s+)/.test(lines[i])) para.push(lines[i++]);
+    blocks.push(<p key={k++}>{renderInline(para.join(' '), `p${k}`)}</p>);
+  }
+  return <div className="space-y-3 text-[13px] leading-relaxed text-muted-foreground">{blocks}</div>;
+};
 
+// ---------------------------------------------------------------------------
+
+const buildPrompt = (body: string, status?: number, contentType?: string) => {
+  let pretty = body;
+  try {
+    pretty = JSON.stringify(JSON.parse(body), null, 2);
+  } catch {
+    /* not JSON: send as-is */
+  }
+  const truncated = pretty.length > MAX_BODY_CHARS;
+  const sample = truncated ? pretty.slice(0, MAX_BODY_CHARS) : pretty;
+  return [
+    'You are helping a developer understand an HTTP API response.',
+    `Status: ${status ?? 'unknown'}. Content-Type: ${contentType || 'unknown'}.`,
+    truncated ? `The body was truncated to the first ${MAX_BODY_CHARS} characters.` : '',
+    'Write a concise analysis in Markdown with these sections:',
+    '## Summary (one or two sentences on what this response represents)',
+    '## Structure (main entities and fields; counts of items in arrays)',
+    '## Things to check (empty arrays, nulls, inconsistent types, error indicators, anything surprising). Say "Nothing notable" if there is nothing.',
+    'Use short bullet points and `code` formatting for field names. Do not repeat the whole body.',
+    '',
+    'Response body:',
+    '```',
+    sample,
+    '```',
+  ]
+    .filter(Boolean)
+    .join('\n');
+};
+
+export const AiResponseInsightsModal: React.FC<AiResponseInsightsModalProps> = ({ show, onClose, responseBody, status, contentType }) => {
+  const apiKey = useApiKey();
+  const { setIsSettingsOpen } = useApp();
+  const { addToast } = useToast();
+  const [state, setState] = useState<State>({ kind: 'idle' });
+  const [copied, setCopied] = useState(false);
+  const runId = useRef(0);
+
+  const generate = useCallback(async () => {
+    if (!apiKey) return;
+    const id = ++runId.current;
+    setState({ kind: 'loading' });
+    try {
+      const { GoogleGenAI } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey });
+      const result = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: buildPrompt(responseBody, status, contentType) });
+      if (id !== runId.current) return;
+      const text = (result.text ?? '').trim();
+      setState(text ? { kind: 'done', text } : { kind: 'error', message: 'The model returned an empty answer. Try again.' });
+    } catch (err: any) {
+      if (id !== runId.current) return;
+      const msg = String(err?.message || '');
+      let message = 'The request to Gemini failed. Check your network connection and try again.';
+      if (err instanceof TypeError && msg.includes('dynamically imported module')) message = 'The AI module failed to load. Check your connection and reload the page.';
+      else if (/api key|API_KEY|permission|401|403/i.test(msg)) message = 'Gemini rejected the API key. Check the key in Settings.';
+      else if (/quota|429|rate/i.test(msg)) message = 'Gemini rate limit or quota reached. Wait a moment and try again.';
+      setState({ kind: 'error', message });
+    }
+  }, [apiKey, responseBody, status, contentType]);
+
+  // Generate on open, and again once a key is added while the dialog is open.
   useEffect(() => {
     if (!show) return;
-
-    const generateInsights = async () => {
-      setIsLoading(true);
-      setError(null);
-
-      const apiKey = getApiKey();
-      if (!apiKey) {
-        setError("Gemini API key is not set. Add it in Settings to use AI insights.");
-        setIsLoading(false);
-        return;
-      }
-      
-      try {
-        const { GoogleGenAI } = await import('@google/genai');
-        let parsedBody = responseBody;
-        try {
-            // Attempt to parse and re-stringify to ensure it's valid JSON
-            parsedBody = JSON.stringify(JSON.parse(responseBody), null, 2);
-        } catch (e) {
-            setError("The response body is not valid JSON. AI insights are only available for JSON responses.");
-            setIsLoading(false);
-            return;
-        }
-
-        const ai = new GoogleGenAI({ apiKey });
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: `Analyze the following JSON API response and provide a concise summary for a developer. Highlight the main entities, mention the count of items in any arrays, and point out any potential issues like empty arrays, null values, or unexpected data types. Format the output using markdown.\n\nJSON Response:\n\`\`\`json\n${parsedBody}\n\`\`\``
-        });
-
-        setInsights(response.text ?? '');
-      } catch (err: any) {
-        console.error('AI insights generation failed:', err);
-        if (err instanceof TypeError && err.message.includes('dynamically imported module')) {
-            setError('Failed to load AI module. Please check your network connection and reload.');
-        } else {
-            setError('Failed to generate insights. Please check your API key and try again.');
-        }
-        addToast('Failed to generate insights.', 'error');
-      } finally {
-        setIsLoading(false);
-      }
+    if (apiKey) generate();
+    else setState({ kind: 'idle' });
+    return () => {
+      runId.current++;
     };
+  }, [show, apiKey, generate]);
 
-    generateInsights();
-  }, [show, responseBody, addToast]);
+  const copy = () => {
+    if (state.kind !== 'done') return;
+    navigator.clipboard.writeText(state.text).then(
+      () => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      },
+      () => addToast('Could not copy to the clipboard.', 'error')
+    );
+  };
+
+  let body: React.ReactNode;
+  let footer: React.ReactNode;
+
+  if (!apiKey) {
+    body = (
+      <div className="flex flex-col items-center gap-2 py-6 text-center">
+        <div className="mb-1 flex h-12 w-12 items-center justify-center rounded-xl border border-border bg-muted/60 text-muted-foreground">
+          <KeyRound className="h-5 w-5" />
+        </div>
+        <h3 className="text-sm font-semibold text-foreground">Add a Gemini API key</h3>
+        <p className="max-w-sm text-[13px] text-muted-foreground">
+          AI insights use Google Gemini with your own API key. The key stays in this browser and requests go straight from here to Google.
+        </p>
+      </div>
+    );
+    footer = (
+      <>
+        <Button variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button onClick={() => setIsSettingsOpen(true)}>
+          <Settings className="h-4 w-4" />
+          Open Settings
+        </Button>
+      </>
+    );
+  } else if (state.kind === 'loading' || state.kind === 'idle') {
+    body = (
+      <div role="status" aria-label="Analyzing response" className="space-y-5 py-1">
+        <p className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Sparkles className="h-3.5 w-3.5 animate-pulse text-primary" />
+          Analyzing the response with Gemini…
+        </p>
+        {[0, 1, 2].map((s) => (
+          <div key={s} className="space-y-2 animate-pulse">
+            <div className="h-3 w-28 rounded bg-muted" />
+            <div className="h-2.5 w-full rounded bg-muted/70" />
+            <div className="h-2.5 w-11/12 rounded bg-muted/70" />
+            {s !== 1 && <div className="h-2.5 w-2/3 rounded bg-muted/70" />}
+          </div>
+        ))}
+      </div>
+    );
+    footer = (
+      <Button variant="secondary" onClick={onClose}>
+        Close
+      </Button>
+    );
+  } else if (state.kind === 'error') {
+    body = (
+      <div className="flex items-start gap-3 rounded-lg border border-destructive/25 bg-destructive-bg p-3">
+        <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-destructive-text" />
+        <div>
+          <p className="text-[13px] font-medium text-destructive-text">Couldn't generate insights</p>
+          <p className="mt-0.5 text-[13px] text-muted-foreground">{state.message}</p>
+        </div>
+      </div>
+    );
+    footer = (
+      <>
+        <Button variant="ghost" onClick={onClose}>
+          Close
+        </Button>
+        <Button variant="secondary" onClick={generate}>
+          <RefreshCw className="h-3.5 w-3.5" />
+          Try again
+        </Button>
+      </>
+    );
+  } else {
+    body = (
+      <>
+        <Markdown text={state.text} />
+        <p className="mt-5 border-t border-border pt-3 text-[11px] text-muted-foreground/80">Generated by Gemini. Verify important details against the raw response.</p>
+      </>
+    );
+    footer = (
+      <>
+        <Button variant="ghost" onClick={generate}>
+          <RefreshCw className="h-3.5 w-3.5" />
+          Regenerate
+        </Button>
+        <span className="flex-1" />
+        <Button variant="secondary" onClick={copy}>
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+        <Button variant="secondary" onClick={onClose}>
+          Close
+        </Button>
+      </>
+    );
+  }
 
   return (
-    <Modal show={show} onClose={onClose} size="lg">
-      <div className="flex justify-between items-center pb-3 border-b border-border">
-        <h2 className="text-lg font-bold flex items-center gap-2">
-          <Sparkles className="h-5 w-5 text-yellow-400" />
-          AI Response Insights
-        </h2>
-        <button onClick={onClose} className="text-2xl text-muted-foreground hover:text-foreground">&times;</button>
-      </div>
-      <div className="mt-4 max-h-[60vh] overflow-y-auto pr-2">
-        {isLoading && (
-          <div className="flex flex-col items-center justify-center h-48 space-y-2">
-            <Sparkles className="h-8 w-8 text-primary animate-pulse" />
-            <p className="text-muted-foreground">Analyzing response...</p>
-          </div>
-        )}
-        {error && (
-            <div className="flex flex-col items-center justify-center h-48 space-y-2 text-center text-destructive-text p-4 bg-destructive-bg rounded-lg">
-                <AlertTriangle className="h-8 w-8" />
-                <p className="font-semibold">Analysis Error</p>
-                <p className="text-sm">{error}</p>
-            </div>
-        )}
-        {!isLoading && !error && (
-          <div className="prose prose-sm prose-invert max-w-none prose-strong:text-foreground prose-em:text-muted-foreground" dangerouslySetInnerHTML={{ __html: simpleMarkdownToHtml(insights) }} />
-        )}
-      </div>
-       <div className="mt-6 flex justify-end">
-          <Button variant="secondary" onClick={onClose}>Close</Button>
-        </div>
+    <Modal show={show} onClose={onClose} size="2xl" icon={<Sparkles />} title="Response insights" description="An AI summary of the response structure and anything worth checking." footer={footer}>
+      {body}
     </Modal>
   );
 };

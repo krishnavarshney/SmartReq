@@ -7,47 +7,37 @@ interface SizeMetricsProps {
     responseSize?: ApiResponse['size'];
 }
 
-export const SizeMetrics: React.FC<SizeMetricsProps> = ({ requestSize, responseSize }) => {
-    return (
-        <div className="p-2 text-sm space-y-3">
-            <div>
-                <div className="flex justify-between items-center font-bold mb-1">
-                    <span>
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline -mt-0.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                        </svg>
-                        Response Size
-                    </span>
-                    <span>{formatBytes(responseSize?.total || 0)}</span>
-                </div>
-                <div className="flex justify-between items-center text-xs text-muted-foreground pl-2">
-                    <span>Headers</span>
-                    <span>{formatBytes(responseSize?.headers || 0)}</span>
-                </div>
-                <div className="flex justify-between items-center text-xs text-muted-foreground pl-2">
-                    <span>Body</span>
-                    <span>{formatBytes(responseSize?.body || 0)}</span>
-                </div>
-            </div>
-             <div>
-                <div className="flex justify-between items-center font-bold mb-1">
-                    <span>
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline -mt-0.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v17" />
-                        </svg>
-                        Request Size
-                    </span>
-                    <span>{formatBytes(requestSize?.total || 0)}</span>
-                </div>
-                <div className="flex justify-between items-center text-xs text-muted-foreground pl-2">
-                    <span>Headers</span>
-                    <span>{formatBytes(requestSize?.headers || 0)}</span>
-                </div>
-                <div className="flex justify-between items-center text-xs text-muted-foreground pl-2">
-                    <span>Body</span>
-                    <span>{formatBytes(requestSize?.body || 0)}</span>
-                </div>
-            </div>
+const Section: React.FC<{ title: string; size?: { headers: number; body: number; total: number } }> = ({ title, size }) => (
+    <div className="space-y-1">
+        <div className="flex items-baseline justify-between">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</span>
+            <span className="font-mono text-[13px] font-semibold tabular-nums text-foreground">{size ? formatBytes(size.total) : '—'}</span>
         </div>
-    );
-};
+        {size && (
+            <>
+                <div className="flex justify-between text-muted-foreground">
+                    <span>Headers</span>
+                    <span className="font-mono tabular-nums">{formatBytes(size.headers)}</span>
+                </div>
+                <div className="flex justify-between text-muted-foreground">
+                    <span>Body</span>
+                    <span className="font-mono tabular-nums">{formatBytes(size.body)}</span>
+                </div>
+            </>
+        )}
+    </div>
+);
+
+/** Size breakdown for the status bar popover. Sizes are of the decoded content. */
+export const SizeMetrics: React.FC<SizeMetricsProps> = ({ requestSize, responseSize }) => (
+    <div className="space-y-3">
+        <Section title="Response" size={responseSize} />
+        {requestSize && (
+            <>
+                <div className="h-px bg-border" />
+                <Section title="Request" size={requestSize} />
+            </>
+        )}
+        <p className="text-[11px] leading-relaxed text-muted-foreground/80">Measured on the decoded body; transfer size over the wire may be smaller when compressed.</p>
+    </div>
+);
