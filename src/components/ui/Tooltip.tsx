@@ -56,7 +56,11 @@ export const Tooltip: React.FC<TooltipProps> = ({ content, children, side = 'top
         ref={triggerRef}
         onMouseEnter={show}
         onMouseLeave={hide}
-        onFocus={show}
+        onFocus={(e) => {
+          // Only keyboard focus shows the tooltip; a mouse click shouldn't leave it hanging.
+          const target = e.target as HTMLElement;
+          if (target.matches?.(':focus-visible')) show();
+        }}
         onBlur={hide}
         onMouseDown={hide}
         aria-describedby={isVisible ? id : undefined}

@@ -112,7 +112,7 @@ const ThemeMenu: React.FC = () => {
 };
 
 export const Header: React.FC = () => {
-  const { setIsSettingsOpen, setIsSidebarOpen, isSidebarOpen, layout, setLayout, mode, setIsCommandPaletteOpen } = useApp();
+  const { setIsSettingsOpen, setIsSidebarOpen, isSidebarOpen, layout, setLayout, mode, setIsCommandPaletteOpen, revealSidebarPanel } = useApp();
 
   return (
     <header className="z-30 flex-shrink-0 border-b border-border bg-card">
@@ -175,7 +175,7 @@ export const Header: React.FC = () => {
       {/* Mobile: modes get their own scrollable row */}
       <div className="flex items-center gap-2 border-t border-border px-2 py-1.5 md:hidden">
         <ModeSwitcher className="no-scrollbar flex-1 overflow-x-auto" />
-        <IconButton size="sm" aria-label="Environments" onClick={() => setIsSidebarOpen(true)}>
+        <IconButton size="sm" aria-label="Environments" onClick={() => revealSidebarPanel('environment')}>
           <SlidersHorizontal className="h-4 w-4" />
         </IconButton>
       </div>

@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { FilePlus, FolderPlus, Import, LayoutHorizontal, LayoutVertical, Settings, FileText, History, Globe } from './components/icons';
 import { Monitor, Moon, Sun, PanelLeft } from 'lucide-react';
@@ -12,6 +12,7 @@ import {
   KeyValueItem,
   FinalApiRequest,
   RequestNode,
+  Tab,
 } from './types';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { ToastContainer } from './components/ToastContainer';
@@ -86,9 +87,9 @@ const AppContent: React.FC = () => {
   const [composerActiveTab, setComposerActiveTab] = useState<string | null>(null);
 
   const handleRequestUpdate = useCallback(
-    (updates: Partial<ApiRequest>) => {
+    (updates: Partial<ApiRequest>, options?: { silent?: boolean }) => {
       if (activeTab && activeRequest) {
-        updateTab(activeTab.id, { request: { ...activeRequest, ...updates }, isDirty: true });
+        updateTab(activeTab.id, { request: { ...activeRequest, ...updates }, isDirty: options?.silent ? activeTab.isDirty : true });
       }
     },
     [activeTab, activeRequest, updateTab]
@@ -103,19 +104,6 @@ const AppContent: React.FC = () => {
     return () => clearTimeout(timer);
   }, [hasOnboarded, setIsOnboardingOpen]);
 
-  // Name untitled tabs after their URL's last path segment
-  useEffect(() => {
-    if (!activeTab || activeTab.name !== 'New Request' || !activeRequest?.url) return;
-    try {
-      const url = new URL(activeRequest.url);
-      const segments = url.pathname.split('/').filter(Boolean);
-      const newName = segments.pop() || url.hostname.replace('www.', '');
-      if (newName && newName !== activeTab.name) updateTab(activeTab.id, { name: newName, isRenaming: true });
-    } catch {
-      /* not a complete URL yet */
-    }
-  }, [activeRequest?.url, activeTab, updateTab]);
-
   const allVariables: KeyValueItem[] = useMemo(() => {
     const activeEnv = workspace.environments.find((e) => e.id === activeEnvironmentId);
     return [...globals, ...(activeEnv ? activeEnv.variables : [])];
@@ -123,9 +111,13 @@ const AppContent: React.FC = () => {
 
   /** Build, send and test one request. Pure: no logging or UI state. */
   const executeRequest = useCallback(
-    async (requestToSend: ApiRequest, dataForRow: Record<string, string> = {}): Promise<{ request: FinalApiRequest; response: ApiResponse }> => {
+    async (
+      requestToSend: ApiRequest,
+      dataForRow: Record<string, string> = {},
+      signal?: AbortSignal
+    ): Promise<{ request: FinalApiRequest; response: ApiResponse }> => {
       const finalRequest = buildFinalRequest(requestToSend, dataForRow, allVariables);
-      let response = await realApiCall(finalRequest);
+      let response = await realApiCall(finalRequest, { signal });
 
       if (requestToSend.testScript) {
         const scriptEnv = allVariables.reduce(
@@ -152,6 +144,9 @@ const AppContent: React.FC = () => {
     [allVariables]
   );
 
+  const sendControllerRef = useRef<AbortController | null>(null);
+  const handleCancelRequest = useCallback(() => sendControllerRef.current?.abort(), []);
+
   const handleSingleSend = useCallback(async () => {
     if (!activeRequest || !activeTab || isLoading) return;
     if (!activeRequest.url.trim()) {
@@ -165,8 +160,10 @@ const AppContent: React.FC = () => {
     const tabId = activeTab.id;
     const originalRequestId = activeTab.originalRequestId;
     setIsLoading(true);
+    const controller = new AbortController();
+    sendControllerRef.current = controller;
     try {
-      const { request, response } = await executeRequest(activeRequest, {});
+      const { request, response } = await executeRequest(activeRequest, {}, controller.signal);
       const newLog: SingleRequestLog = {
         id: Date.now(),
         mode: 'single',
@@ -178,13 +175,25 @@ const AppContent: React.FC = () => {
       };
       setLogs((prev) => [newLog, ...prev.slice(0, 99)]);
       if (originalRequestId) {
-        updateNode(originalRequestId, (node) => {
-          if (node.type === 'request') node.responses = [newLog, ...(node.responses || []).slice(0, 19)];
-          return node;
-        });
+        updateNode(originalRequestId, (node) =>
+          node.type === 'request' ? { ...node, responses: [newLog, ...(node.responses || []).slice(0, 19)] } : node
+        );
       }
-      updateTab(tabId, { latestResponse: response });
+      // Name untitled tabs after the URL on first send, not on every keystroke
+      // (typing "http://l" used to rename the tab "l" permanently).
+      const updates: Partial<Tab> = { latestResponse: response };
+      if (activeTab.name === 'New Request' && !originalRequestId) {
+        try {
+          const url = new URL(request.url);
+          const name = url.pathname.split('/').filter(Boolean).pop() || url.hostname.replace(/^www\./, '');
+          if (name) updates.name = name;
+        } catch {
+          /* leave the default name */
+        }
+      }
+      updateTab(tabId, updates);
     } finally {
+      if (sendControllerRef.current === controller) sendControllerRef.current = null;
       setIsLoading(false);
     }
   }, [activeRequest, activeTab, isLoading, isBodyInvalid, executeRequest, setLogs, updateNode, updateTab, addToast]);
@@ -210,13 +219,9 @@ const AppContent: React.FC = () => {
     if (!activeTab) return;
     if (activeTab.originalRequestId && findNode(activeTab.originalRequestId)) {
       if (!activeTab.isDirty) return;
-      updateNode(activeTab.originalRequestId, (node) => {
-        if (node.type === 'request') {
-          node.request = activeTab.request;
-          node.name = activeTab.name;
-        }
-        return node;
-      });
+      updateNode(activeTab.originalRequestId, (node) =>
+        node.type === 'request' ? { ...node, request: activeTab.request, name: activeTab.name } : node
+      );
       updateTab(activeTab.id, { isDirty: false });
       addToast('Request saved', 'success');
     } else {
@@ -323,6 +328,7 @@ const AppContent: React.FC = () => {
       return;
     }
     setIsGeneratingTests(true);
+    const tabId = activeTab.id;
     const response = activeTab.latestResponse;
     const bodyString = typeof response.body === 'string' ? response.body : JSON.stringify(response.body, null, 2);
     const prompt = `You are an expert JavaScript developer writing test scripts for an API client. The test environment provides a 'pm' object.
@@ -345,18 +351,24 @@ Respond ONLY with the raw JavaScript code. Do not include markdown fences or any
       const result = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
       const generated = (result.text ?? '').replace(/^```(?:javascript|js)?\s*|```\s*$/g, '').trim();
       if (!generated) throw new Error('Empty response');
-      if (activeRequest) {
-        const current = activeRequest.testScript || '';
-        handleRequestUpdate({ testScript: current ? `${current}\n\n// AI generated tests\n${generated}` : generated });
-        setComposerActiveTab('Tests');
-        addToast('Tests generated', 'success');
-      }
+      // Merge into the tab's latest state: the user may have edited the request
+      // while Gemini was answering, and the closure's activeRequest is stale.
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== tabId) return t;
+          const current = t.request.testScript || '';
+          const testScript = current ? `${current}\n\n// AI generated tests\n${generated}` : generated;
+          return { ...t, request: { ...t.request, testScript }, isDirty: true };
+        })
+      );
+      setComposerActiveTab('Tests');
+      addToast('Tests generated', 'success');
     } catch (e) {
       addToast(`Test generation failed${e instanceof Error && e.message ? `: ${e.message}` : ''}`, 'error');
     } finally {
       setIsGeneratingTests(false);
     }
-  }, [activeTab?.latestResponse, activeRequest, addToast, handleRequestUpdate, setIsSettingsOpen]);
+  }, [activeTab?.latestResponse, activeTab?.id, setTabs, addToast, setIsSettingsOpen]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -481,6 +493,7 @@ Respond ONLY with the raw JavaScript code. Do not include markdown fences or any
                 handleNewRequest={handleNewRequest}
                 handleRequestUpdate={handleRequestUpdate}
                 handleSingleSend={handleSingleSend}
+                handleCancelRequest={handleCancelRequest}
                 isLoading={isLoading}
                 handleGenerateBulkData={handleGenerateBulkData}
                 handleSaveRequest={handleSaveRequest}
