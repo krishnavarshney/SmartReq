@@ -1,456 +1,413 @@
-import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { KeyValueItem } from '../../types';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from './HoverCard'; // Keep imports for now, might remove HoverCard later
 import { useLog } from '../../context/LogContext';
-import { Copy, ExternalLink, Link as LinkIcon, X } from '../icons';
+import { DYNAMIC_VARIABLES, resolveVariable, ResolvedVariable, VariableSource } from '../../utils/interpolation';
+import { History } from '../icons';
 
-interface VariablePreviewInputProps extends React.InputHTMLAttributes<HTMLInputElement> {
+interface VariablePreviewInputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'size' | 'onSubmit'> {
   url: string;
   onUrlChange: (url: string) => void;
   globals: KeyValueItem[];
   dataVariables?: Record<string, string>;
+  /** Called on Enter when no suggestion is highlighted. */
+  onSubmit?: () => void;
+  /** Called when a `curl ...` command is pasted. Return true if it was handled (the paste is then not inserted). */
+  onPasteCurl?: (command: string) => boolean | Promise<boolean>;
+  /** Offer previously sent URLs while typing (default true). */
+  showHistory?: boolean;
+  /** Extra classes for the text field itself (height, padding...). */
+  inputClassName?: string;
 }
 
-export const VariablePreviewInput: React.FC<VariablePreviewInputProps> = ({ url, onUrlChange, globals, dataVariables, placeholder, className, ...props }) => {
-  const contentEditableRef = useRef<HTMLDivElement>(null);
-  const suggestionsRef = useRef<HTMLDivElement>(null);
-  const variableSuggestionsRef = useRef<HTMLDivElement>(null);
-  const { urlHistory } = useLog();
-  
-  const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
+const TOKEN_RE = /(\{\{[^{}]*\}\})/g;
+const PATH_VAR_RE = /(\/:[A-Za-z_][\w-]*)/g;
 
-  const [isVariableSuggestionsOpen, setIsVariableSuggestionsOpen] = useState(false);
-  const [variableSuggestions, setVariableSuggestions] = useState<string[]>([]);
-  const [activeVariableSuggestionIndex, setActiveVariableSuggestionIndex] = useState(0);
-  const [variableQuery, setVariableQuery] = useState('');
+export const VARIABLE_TONE: Record<VariableSource, string> = {
+  environment: 'text-info-text bg-info-bg',
+  data: 'text-warning-text bg-warning-bg',
+  dynamic: 'text-primary bg-primary/10',
+  unresolved: 'text-destructive-text bg-destructive-bg',
+};
 
-  // State to hold the current plain text content of the editable div
-  const [currentTextContent, setCurrentTextContent] = useState(url);
-  const [isFocused, setIsFocused] = useState(false);
+export const VARIABLE_SOURCE_LABEL: Record<VariableSource, string> = {
+  environment: 'Environment',
+  data: 'Data row',
+  dynamic: 'Dynamic',
+  unresolved: 'Not defined',
+};
 
-  // Ref to store the selection range before re-render
-  const savedSelectionStart = useRef<number | null>(null);
-  const savedSelectionEnd = useRef<number | null>(null);
+interface Segment {
+  text: string;
+  kind: 'text' | 'var' | 'path';
+  variable?: ResolvedVariable;
+}
 
-  const variableMap = useMemo(() => {
-    const combinedMap: Record<string, { value: string, type: string }> = {};
-    globals.filter(g => g.enabled && g.key).forEach(g => {
-      combinedMap[g.key] = { value: g.value, type: 'Global' };
-    });
-    Object.entries(dataVariables || {}).forEach(([key, value]) => {
-      combinedMap[key] = { value: String(value), type: 'Data Source' };
-    });
-    return combinedMap;
-  }, [globals, dataVariables]);
-
-  const generateHighlightedHtml = useCallback((text: string) => {
-    const regex = /\{\{(.+?)\}\}/g;
-    let lastIndex = 0;
-    let html = '';
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-      if (match.index > lastIndex) {
-        html += text.slice(lastIndex, match.index);
-      }
-      const varName = match[1].trim();
-      const varDetails = variableMap[varName];
-      const hoverContent = varDetails ? `${varDetails.type}: ${varDetails.value}` : 'Unresolved variable';
-      let pillClasses = "var-token rounded-sm mx-px pointer-events-auto cursor-help";
-      if (varDetails?.type === 'Global') pillClasses += " text-blue-400 bg-blue-400/10";
-      else if (varDetails?.type === 'Data Source') pillClasses += " text-orange-400 bg-orange-400/10";
-      else pillClasses += " text-red-400 bg-red-400/10";
-
-      html += `<span contenteditable="false" class="${pillClasses}" title="${hoverContent}" data-tooltip="${hoverContent}">${`{{${varName}}}`}</span>`;
-      lastIndex = match.index + match[0].length;
-    }
-    if (lastIndex < text.length) {
-      html += text.slice(lastIndex);
-    }
-    return html;
-  }, [variableMap]);
-
-  useEffect(() => {
-    if (url !== currentTextContent) {
-      setCurrentTextContent(url);
-    }
-  }, [url, currentTextContent]);
-
-  const getCharacterOffset = useCallback((rootNode: Node, range: Range) => {
-    let offset = 0;
-    const walker = document.createTreeWalker(
-      rootNode,
-      NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
-      null
-    );
-
-    let currentNode;
-    while ((currentNode = walker.nextNode())) {
-      if (currentNode === range.endContainer) {
-        offset += range.endOffset;
-        break;
-      }
-      if (currentNode.nodeType === Node.TEXT_NODE) {
-        offset += currentNode.textContent?.length || 0;
-      } else if (currentNode.nodeType === Node.ELEMENT_NODE && (currentNode as HTMLElement).contentEditable === 'false') {
-        offset += currentNode.textContent?.length || 0;
-      }
-    }
-    return offset;
-  }, []);
-
-  // Restore cursor after re-render
-  useEffect(() => {
-    if (!contentEditableRef.current || savedSelectionStart.current === null || savedSelectionEnd.current === null) return;
-
-    const selection = window.getSelection();
-    if (!selection) return;
-
-    const restore = () => {
-      try {
-        const range = document.createRange();
-        let charCount = 0;
-        let startNode: Node | null = null;
-        let endNode: Node | null = null;
-        let startOffset = 0;
-        let endOffset = 0;
-
-        const childNodes = contentEditableRef.current!.childNodes;
-
-        for (let i = 0; i < childNodes.length; i++) {
-          const node = childNodes[i];
-
-          if (node.nodeType === Node.TEXT_NODE) {
-            const nodeLength = node.textContent?.length || 0;
-
-            if (startNode === null && savedSelectionStart.current! <= charCount + nodeLength) {
-              startNode = node;
-              startOffset = savedSelectionStart.current! - charCount;
-            }
-            if (endNode === null && savedSelectionEnd.current! <= charCount + nodeLength) {
-              endNode = node;
-              endOffset = savedSelectionEnd.current! - charCount;
-            }
-            charCount += nodeLength;
-          } else if (node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).contentEditable === 'false') {
-            const varTextLength = node.textContent?.length || 0;
-
-            if (startNode === null && savedSelectionStart.current! <= charCount + varTextLength) {
-              startNode = contentEditableRef.current!;
-              startOffset = i + 1; // place caret after the token
-            }
-            if (endNode === null && savedSelectionEnd.current! <= charCount + varTextLength) {
-              endNode = contentEditableRef.current!;
-              endOffset = i + 1;
-            }
-            charCount += varTextLength;
-          } else if (node.nodeType === Node.ELEMENT_NODE) {
-            const innerTextLength = node.textContent?.length || 0;
-            if (startNode === null && savedSelectionStart.current! <= charCount + innerTextLength) {
-              startNode = node;
-              startOffset = savedSelectionStart.current! - charCount;
-            }
-            if (endNode === null && savedSelectionEnd.current! <= charCount + innerTextLength) {
-              endNode = node;
-              endOffset = savedSelectionEnd.current! - charCount;
-            }
-            charCount += innerTextLength;
-          }
-        }
-
-        if (startNode && endNode) {
-          range.setStart(startNode, startOffset);
-          range.setEnd(endNode, endOffset);
-          selection.removeAllRanges();
-          selection.addRange(range);
-        } else {
-          const range = document.createRange();
-          range.selectNodeContents(contentEditableRef.current!);
-          range.collapse(false);
-          selection.removeAllRanges();
-          selection.addRange(range);
-        }
-      } catch (e) {
-        const range = document.createRange();
-        range.selectNodeContents(contentEditableRef.current!);
-        range.collapse(false);
-        const selection = window.getSelection();
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-      } finally {
-        savedSelectionStart.current = null;
-        savedSelectionEnd.current = null;
-      }
-    };
-
-    setTimeout(restore, 0);
-  }, [currentTextContent, getCharacterOffset]);
-
-  const openVariableSuggestionsForText = useCallback((text: string, cursorPosition: number) => {
-    const before = text.slice(0, cursorPosition);
-    const openIdx = before.lastIndexOf('{{');
-    const closeIdx = before.lastIndexOf('}}');
-    if (openIdx !== -1 && (closeIdx === -1 || closeIdx < openIdx)) {
-      const query = before.slice(openIdx + 2); // after '{{'
-      setVariableQuery(query);
-      const filtered = Object.keys(variableMap).filter(v => v.toLowerCase().includes(query.toLowerCase()));
-      setVariableSuggestions(filtered);
-      setActiveVariableSuggestionIndex(0);
-      setIsVariableSuggestionsOpen(filtered.length > 0);
+const segmentize = (text: string, globals: KeyValueItem[], data?: Record<string, string>): Segment[] => {
+  const segments: Segment[] = [];
+  text.split(TOKEN_RE).forEach((part) => {
+    if (!part) return;
+    if (/^\{\{[^{}]*\}\}$/.test(part)) {
+      segments.push({ text: part, kind: 'var', variable: resolveVariable(part.slice(2, -2), globals, data) });
       return;
     }
-    setIsVariableSuggestionsOpen(false);
-  }, [variableMap]);
-
-  const handleInput = useCallback(() => {
-    if (!contentEditableRef.current) return;
-
-    const selection = window.getSelection();
-    if (selection && selection.rangeCount > 0) {
-      const range = selection.getRangeAt(0);
-      savedSelectionStart.current = getCharacterOffset(contentEditableRef.current, range.cloneRange());
-      savedSelectionEnd.current = getCharacterOffset(contentEditableRef.current, range);
-    } else {
-      savedSelectionStart.current = null;
-      savedSelectionEnd.current = null;
-    }
-
-    const newPlainText = contentEditableRef.current.innerText;
-    setCurrentTextContent(newPlainText);
-    onUrlChange(newPlainText);
-
-    if (savedSelectionStart.current !== null) {
-      openVariableSuggestionsForText(newPlainText, savedSelectionStart.current);
-    }
-  }, [onUrlChange, getCharacterOffset, openVariableSuggestionsForText]);
-
-  const handleVariableSuggestionClick = useCallback((variableName: string) => {
-    if (!contentEditableRef.current) return;
-
-    const currentText = currentTextContent;
-    // Prefer saved caret pos; if null, fall back to end
-    const caret = savedSelectionStart.current ?? currentText.length;
-
-    const before = currentText.slice(0, caret);
-    const after = currentText.slice(caret);
-
-    const openIdx = before.lastIndexOf('{{');
-    const closeIdx = before.lastIndexOf('}}');
-
-    if (openIdx !== -1 && (closeIdx === -1 || closeIdx < openIdx)) {
-      const prefix = before.slice(0, openIdx);
-      const newText = `${prefix}{{${variableName}}}${after}`;
-      setCurrentTextContent(newText);
-      onUrlChange(newText);
-
-      const newCursorPos = (prefix + `{{${variableName}}}`).length;
-      savedSelectionStart.current = newCursorPos;
-      savedSelectionEnd.current = newCursorPos;
-    }
-    setIsVariableSuggestionsOpen(false);
-
-    // Refocus contenteditable to ensure it remains editable after inserting token
-    requestAnimationFrame(() => {
-      contentEditableRef.current?.focus();
-      const selection = window.getSelection();
-      if (selection && contentEditableRef.current) {
-        const range = document.createRange();
-        range.selectNodeContents(contentEditableRef.current);
-        range.collapse(false);
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
+    // Only highlight `:param` segments in the path (before ?), never a port.
+    const qIdx = part.indexOf('?');
+    const pathPart = qIdx >= 0 ? part.slice(0, qIdx) : part;
+    const queryPart = qIdx >= 0 ? part.slice(qIdx) : '';
+    pathPart.split(PATH_VAR_RE).forEach((p) => {
+      if (!p) return;
+      segments.push({ text: p, kind: PATH_VAR_RE.test(p) && /^\/:/.test(p) ? 'path' : 'text' });
+      PATH_VAR_RE.lastIndex = 0;
     });
-  }, [onUrlChange, currentTextContent]);
+    if (queryPart) segments.push({ text: queryPart, kind: 'text' });
+  });
+  return segments;
+};
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (isVariableSuggestionsOpen && variableSuggestions.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setActiveVariableSuggestionIndex(prev => (prev + 1) % variableSuggestions.length);
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setActiveVariableSuggestionIndex(prev => (prev - 1 + variableSuggestions.length) % variableSuggestions.length);
-      } else if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
-        handleVariableSuggestionClick(variableSuggestions[activeVariableSuggestionIndex]);
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        setIsVariableSuggestionsOpen(false);
-      }
-    } else if (isSuggestionsOpen && suggestions.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setActiveSuggestionIndex(prev => (prev + 1) % suggestions.length);
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setActiveSuggestionIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
-      } else if (e.key === 'Enter') {
-        if (activeSuggestionIndex > -1) {
-          e.preventDefault();
-          onUrlChange(suggestions[activeSuggestionIndex]);
-          setIsSuggestionsOpen(false);
-        }
-      }
-    }
-    if (e.key === 'Escape') {
-      setIsSuggestionsOpen(false);
-      setIsVariableSuggestionsOpen(false);
-    }
-  }, [isSuggestionsOpen, suggestions, activeSuggestionIndex, onUrlChange, isVariableSuggestionsOpen, variableSuggestions, activeVariableSuggestionIndex, handleVariableSuggestionClick]);
+/** Find an unclosed `{{query` immediately before the caret. */
+const openVariableQuery = (text: string, caret: number): { start: number; query: string } | null => {
+  const before = text.slice(0, caret);
+  const open = before.lastIndexOf('{{');
+  if (open < 0) return null;
+  const between = before.slice(open + 2);
+  if (between.includes('}}') || /[\s/?&=]/.test(between)) return null;
+  return { start: open, query: between };
+};
 
-  const handleFocus = useCallback(() => { setIsSuggestionsOpen(true); setIsFocused(true); }, []);
-  const handleBlur = useCallback(() => {
-    setTimeout(() => {
-      setIsSuggestionsOpen(false);
-      setIsVariableSuggestionsOpen(false);
-      setIsFocused(false);
-    }, 150);
+type Suggestion =
+  | { type: 'variable'; name: string; detail: string; source: VariableSource }
+  | { type: 'history'; url: string };
+
+/**
+ * Single-line URL field with `{{variable}}` highlighting. A native <input> handles
+ * editing, selection, undo and paste; a mirrored layer behind it draws the colors.
+ */
+export const VariablePreviewInput: React.FC<VariablePreviewInputProps> = ({
+  url,
+  onUrlChange,
+  globals,
+  dataVariables,
+  placeholder,
+  className = '',
+  inputClassName = '',
+  onSubmit,
+  onPasteCurl,
+  showHistory = true,
+  onKeyDown,
+  onBlur,
+  onFocus,
+  ...props
+}) => {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const mirrorRef = useRef<HTMLSpanElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const pendingCaret = useRef<number | null>(null);
+  const listId = useId();
+  const { urlHistory } = useLog();
+
+  const [menu, setMenu] = useState<{ kind: 'variable' | 'history'; query: string; start: number } | null>(null);
+  const [active, setActive] = useState(0);
+  const [hovered, setHovered] = useState<{ variable: ResolvedVariable; rect: DOMRect } | null>(null);
+
+  const segments = useMemo(() => segmentize(url, globals, dataVariables), [url, globals, dataVariables]);
+
+  const syncScroll = useCallback(() => {
+    const input = inputRef.current;
+    const mirror = mirrorRef.current;
+    if (input && mirror) mirror.style.transform = `translateX(${-input.scrollLeft}px)`;
   }, []);
 
-  const handleSuggestionClick = useCallback((suggestion: string) => {
-    onUrlChange(suggestion);
-    setIsSuggestionsOpen(false);
-  }, [onUrlChange]);
-
-  useEffect(() => {
-    if (url && isSuggestionsOpen) {
-      const filtered = urlHistory
-        .filter(historyUrl => historyUrl.toLowerCase().includes(url.toLowerCase()) && historyUrl !== url)
-        .slice(0, 10);
-      setSuggestions(filtered);
-      setActiveSuggestionIndex(-1);
-    } else {
-      setSuggestions([]);
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (input && pendingCaret.current !== null) {
+      input.setSelectionRange(pendingCaret.current, pendingCaret.current);
+      pendingCaret.current = null;
     }
-  }, [url, urlHistory, isSuggestionsOpen]);
+    syncScroll();
+  }, [url, syncScroll]);
+
+  const suggestions = useMemo<Suggestion[]>(() => {
+    if (!menu) return [];
+    const q = menu.query.toLowerCase();
+    if (menu.kind === 'variable') {
+      const seen = new Set<string>();
+      const items: Suggestion[] = [];
+      const push = (name: string, detail: string, source: VariableSource) => {
+        const key = name.toLowerCase();
+        if (seen.has(key) || !key.includes(q)) return;
+        seen.add(key);
+        items.push({ type: 'variable', name, detail, source });
+      };
+      Object.entries(dataVariables || {}).forEach(([k, v]) => push(k, String(v), 'data'));
+      [...globals].reverse().forEach((g) => g.enabled && g.key && push(g.key, g.value, 'environment'));
+      Object.entries(DYNAMIC_VARIABLES).forEach(([k, v]) => {
+        if (k !== '$randomuuid') push(k === '$isotimestamp' ? '$isoTimestamp' : k === '$randomint' ? '$randomInt' : k, v.description, 'dynamic');
+      });
+      return items.slice(0, 50);
+    }
+    if (!showHistory) return [];
+    return urlHistory
+      .filter((h) => h !== url && (!q || h.toLowerCase().includes(q)))
+      .slice(0, 8)
+      .map((h) => ({ type: 'history', url: h }) as Suggestion);
+  }, [menu, globals, dataVariables, urlHistory, url, showHistory]);
+
+  const isOpen = !!menu && suggestions.length > 0;
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  // The menu is portalled so it is never clipped by scrolling/overflow-hidden parents.
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const place = () => {
+      const rect = wrapperRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.max(rect.width, 280);
+      setMenuPos({ top: rect.bottom + 6, left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)), width });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [isOpen]);
 
   useEffect(() => {
-    const ref = isVariableSuggestionsOpen ? variableSuggestionsRef : suggestionsRef;
-    const activeIndex = isVariableSuggestionsOpen ? activeVariableSuggestionIndex : activeSuggestionIndex;
-    if (activeIndex > -1 && ref.current) {
-        const activeElement = ref.current.children[activeIndex] as HTMLElement;
-        if (activeElement) {
-            activeElement.scrollIntoView({ block: 'nearest' });
+    setActive(menu?.kind === 'variable' ? 0 : -1);
+  }, [menu?.kind, menu?.query]);
+
+  useEffect(() => {
+    if (!isOpen || active < 0) return;
+    listRef.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [active, isOpen]);
+
+  const updateMenu = (text: string, caret: number) => {
+    const open = openVariableQuery(text, caret);
+    if (open) setMenu({ kind: 'variable', query: open.query, start: open.start });
+    else if (showHistory && text.trim()) setMenu({ kind: 'history', query: text.trim(), start: 0 });
+    else setMenu(null);
+  };
+
+  const apply = (s: Suggestion) => {
+    if (s.type === 'variable' && menu?.kind === 'variable') {
+      const input = inputRef.current;
+      const caret = input?.selectionStart ?? url.length;
+      let after = url.slice(caret);
+      // Swallow an auto-typed closing `}}` right after the caret.
+      if (after.startsWith('}}')) after = after.slice(2);
+      const inserted = `{{${s.name}}}`;
+      const next = url.slice(0, menu.start) + inserted + after;
+      pendingCaret.current = menu.start + inserted.length;
+      onUrlChange(next);
+    } else if (s.type === 'history') {
+      pendingCaret.current = s.url.length;
+      onUrlChange(s.url);
+    }
+    setMenu(null);
+    inputRef.current?.focus();
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value.replace(/[\r\n]+/g, '');
+    onUrlChange(value);
+    updateMenu(value, e.target.selectionStart ?? value.length);
+    setHovered(null);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    onKeyDown?.(e);
+    if (e.defaultPrevented) return;
+    if (isOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActive((i) => (i + 1) % suggestions.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActive((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+        return;
+      }
+      if ((e.key === 'Enter' || (e.key === 'Tab' && menu?.kind === 'variable')) && active >= 0 && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        apply(suggestions[active]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setMenu(null);
+        return;
+      }
+    } else if (e.key === 'ArrowDown' && showHistory && urlHistory.length > 0) {
+      e.preventDefault();
+      setMenu({ kind: 'history', query: '', start: 0 });
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      setMenu(null);
+      // Ctrl/Cmd+Enter is handled by the global shortcut; avoid sending twice.
+      if (!e.metaKey && !e.ctrlKey) onSubmit?.();
+    }
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData('text/plain');
+    if (!text) return;
+    const input = inputRef.current;
+    const start = input?.selectionStart ?? url.length;
+    const end = input?.selectionEnd ?? url.length;
+    const isCurl = /^\s*curl\s/i.test(text);
+    // Plain single-line text: let the browser insert it (keeps native undo).
+    if (!isCurl && !/[\r\n]/.test(text)) return;
+    e.preventDefault();
+    if (isCurl && onPasteCurl && (await onPasteCurl(text.trim()))) return;
+    let clean = text.replace(/\s*\\?\r?\n\s*/g, isCurl ? ' ' : '');
+    if (url === '' || (start === 0 && end === url.length)) clean = clean.trim();
+    pendingCaret.current = start + clean.length;
+    onUrlChange(url.slice(0, start) + clean + url.slice(end));
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    const mirror = mirrorRef.current;
+    if (!mirror) return;
+    const tokens = mirror.querySelectorAll<HTMLElement>('[data-var-index]');
+    for (const el of Array.from(tokens)) {
+      const rect = el.getBoundingClientRect();
+      if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top - 4 && e.clientY <= rect.bottom + 4) {
+        const seg = segments[Number(el.dataset.varIndex)];
+        if (seg?.variable) {
+          if (hovered?.variable.name !== seg.variable.name || hovered.rect.left !== rect.left) setHovered({ variable: seg.variable, rect });
+          return;
         }
+      }
     }
-  }, [activeSuggestionIndex, activeVariableSuggestionIndex, isVariableSuggestionsOpen]);
-
-  const parsed = useMemo(() => {
-    const raw = currentTextContent.trim();
-    if (!raw) return { valid: false, host: '', path: '', queryCount: 0, scheme: '' };
-    try {
-      const withProto = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
-      const u = new URL(withProto);
-      const queryCount = Array.from(u.searchParams.keys()).length;
-      return { valid: true, host: u.host, path: u.pathname, queryCount, scheme: u.protocol.replace(':','') };
-    } catch {
-      return { valid: false, host: '', path: '', queryCount: 0, scheme: '' };
-    }
-  }, [currentTextContent]);
-
-  const clearUrl = () => {
-    setCurrentTextContent('');
-    onUrlChange('');
-    contentEditableRef.current?.focus();
-  };
-
-  const copyUrl = () => {
-    if (!currentTextContent) return;
-    navigator.clipboard.writeText(currentTextContent);
-  };
-
-  const openUrl = () => {
-    if (!parsed.valid) return;
-    const withProto = /^https?:\/\//i.test(currentTextContent) ? currentTextContent : `http://${currentTextContent}`;
-    window.open(withProto, '_blank');
+    if (hovered) setHovered(null);
   };
 
   return (
-    <div className={`relative ${className}`}>
-      <div
-        ref={contentEditableRef}
-        contentEditable="true"
-        onInput={handleInput}
-        onKeyDown={handleKeyDown}
-        onFocus={handleFocus}
-        onBlur={handleBlur}
-        className={`w-full glass-surface-lite elev-1 border rounded-md text-base sm:text-[15px] text-foreground placeholder:text-muted-foreground transition-colors focus:outline-none overflow-auto whitespace-nowrap pr-24 ${parsed.valid ? 'border-border' : 'border-destructive'}`}
-        style={{ minWidth: '0' }}
-        role="textbox"
-        aria-multiline={false}
-        spellCheck={false}
-        {...props}
-        dangerouslySetInnerHTML={{ __html: generateHighlightedHtml(currentTextContent) }}
-      />
-      {/* Right-side quick actions */}
-      <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1 bg-transparent">
-        {currentTextContent && (
-          <button aria-label="Clear URL" onClick={clearUrl} className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground">
-            <X className="h-4 w-4" />
-          </button>
-        )}
-        <button aria-label="Copy URL" onClick={copyUrl} className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground">
-          <Copy className="h-4 w-4" />
-        </button>
-        <button aria-label="Open in new tab" onClick={openUrl} disabled={!parsed.valid} className={`p-1 rounded hover:bg-accent ${parsed.valid ? 'text-muted-foreground hover:text-foreground' : 'text-muted-foreground/40 cursor-not-allowed'}`}>
-          <ExternalLink className="h-4 w-4" />
-        </button>
-      </div>
-      {(currentTextContent === '' || currentTextContent.length === 0) && placeholder && (
-        <div className="absolute inset-0 pointer-events-none sm:text-base text-muted-foreground flex items-center">
-          {placeholder}
-        </div>
-      )}
-      {/* Helper bar (positioned below input, non-overlapping) */}
-      {(isFocused || !!currentTextContent) && (
-        <div className="absolute left-0 top-[calc(100%+4px)] w-full text-xs flex items-center justify-between">
-          <div className="inline-flex items-center gap-2 px-2 py-1 rounded glass-surface-lite elev-1 max-w-[70%] overflow-hidden">
-            <span className={`inline-flex items-center gap-1 ${parsed.scheme === 'https' ? 'text-emerald-400' : 'text-muted-foreground'}`}>
-              <LinkIcon className="h-3.5 w-3.5" />
-              {parsed.scheme || 'url'}
-            </span>
-            {parsed.host && (
-              <span className="inline-flex items-center gap-1 text-foreground">
-                <img src={`https://www.google.com/s2/favicons?domain=${parsed.host}&sz=16`} alt="" className="h-3.5 w-3.5 rounded-sm" />
-                <span className="truncate max-w-[160px]">{parsed.host}</span>
-              </span>
+    <div ref={wrapperRef} className={`relative min-w-0 ${className}`}>
+      <div className="relative h-full w-full overflow-hidden">
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 flex items-center overflow-hidden px-2.5 font-mono text-[13px]">
+          <span ref={mirrorRef} className="whitespace-pre text-foreground will-change-transform">
+            {segments.map((seg, i) =>
+              seg.kind === 'var' && seg.variable ? (
+                <span key={i} data-var-index={i} className={`rounded-[3px] ${VARIABLE_TONE[seg.variable.source]}`}>
+                  {seg.text}
+                </span>
+              ) : seg.kind === 'path' ? (
+                <span key={i} className="text-primary">
+                  {seg.text}
+                </span>
+              ) : (
+                <span key={i}>{seg.text}</span>
+              )
             )}
-            {parsed.path && <span className="text-muted-foreground truncate">{parsed.path}</span>}
+          </span>
+        </div>
+        <input
+          ref={inputRef}
+          type="text"
+          value={url}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+          onScroll={syncScroll}
+          onSelect={syncScroll}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={() => setHovered(null)}
+          onFocus={(e) => {
+            onFocus?.(e);
+            syncScroll();
+          }}
+          onBlur={(e) => {
+            onBlur?.(e);
+            setMenu(null);
+            setHovered(null);
+          }}
+          placeholder={placeholder}
+          spellCheck={false}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={isOpen}
+          aria-controls={isOpen ? listId : undefined}
+          aria-activedescendant={isOpen && active >= 0 ? `${listId}-${active}` : undefined}
+          className={`relative block h-full w-full bg-transparent px-2.5 font-mono text-[13px] text-transparent caret-foreground outline-none selection:bg-primary/30 selection:text-transparent placeholder:font-sans placeholder:text-muted-foreground/70 ${inputClassName}`}
+          {...props}
+        />
+      </div>
+
+      {isOpen && menuPos && createPortal(
+        <div
+          ref={listRef}
+          id={listId}
+          role="listbox"
+          style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width }}
+          className="fixed z-[70] max-h-72 overflow-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-popover animate-fade-in"
+        >
+          <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            {menu?.kind === 'variable' ? 'Variables' : 'Recent URLs'}
           </div>
-          <div className="text-muted-foreground">{parsed.queryCount > 0 ? `${parsed.queryCount} param${parsed.queryCount>1?'s':''}` : 'no params'}</div>
-        </div>
+          {suggestions.map((s, i) => (
+            <div
+              key={s.type === 'variable' ? `v-${s.name}` : `h-${s.url}`}
+              id={`${listId}-${i}`}
+              data-index={i}
+              role="option"
+              aria-selected={i === active}
+              onMouseDown={(e) => e.preventDefault()}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => apply(s)}
+              className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[13px] ${i === active ? 'bg-accent text-accent-foreground' : ''}`}
+            >
+              {s.type === 'variable' ? (
+                <>
+                  <span className={`rounded-[3px] px-1 font-mono text-xs ${VARIABLE_TONE[s.source]}`}>{s.name}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{s.detail}</span>
+                  <span className="flex-shrink-0 text-[11px] text-muted-foreground">{VARIABLE_SOURCE_LABEL[s.source]}</span>
+                </>
+              ) : (
+                <>
+                  <History className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs">{s.url}</span>
+                </>
+              )}
+            </div>
+          ))}
+        </div>,
+        document.body
       )}
-      {isVariableSuggestionsOpen && variableSuggestions.length > 0 && (
-        <div ref={variableSuggestionsRef} className="autocomplete-suggestions absolute top-full mt-2 w-full bg-popover border border-border rounded-md shadow-lg z-20 p-1 max-h-60 overflow-y-auto animate-scale-in">
-            {variableSuggestions.map((varName, index) => (
-                <button
-                    key={varName}
-                    onClick={() => handleVariableSuggestionClick(varName)}
-                    onMouseDown={e => e.preventDefault()}
-                    className={`w-full text-left flex items-center justify-between rounded-sm px-2 py-1.5 outline-none cursor-pointer hover:bg-accent ${activeVariableSuggestionIndex === index ? 'bg-accent' : ''}`}
-                >
-                    <span className="font-mono">{varName}</span>
-                    <span className="text-xs text-muted-foreground">{variableMap[varName]?.type}</span>
-                </button>
-            ))}
-        </div>
-      )}
-      {isSuggestionsOpen && suggestions.length > 0 && (
-        <div ref={suggestionsRef} className="autocomplete-suggestions absolute top-full mt-2 w-full bg-popover border border-border rounded-md shadow-lg z-20 p-1 max-h-60 overflow-y-auto animate-scale-in">
-            {suggestions.map((suggestion, index) => (
-                <button
-                    key={index}
-                    onClick={() => handleSuggestionClick(suggestion)}
-                    onMouseDown={e => e.preventDefault()}
-                    className={`w-full text-left flex items-center rounded-sm px-2 py-1.5 outline-none cursor-pointer hover:bg-accent ${activeSuggestionIndex === index ? 'bg-accent' : ''}`}
-                >
-                    <span className="truncate font-mono">{suggestion}</span>
-                </button>
-            ))}
-        </div>
-      )}
+
+      {hovered &&
+        createPortal(
+          <div
+            role="tooltip"
+            style={{ top: hovered.rect.bottom + 8, left: Math.max(8, Math.min(hovered.rect.left, window.innerWidth - 328)) }}
+            className="pointer-events-none fixed z-[9999] w-max max-w-[320px] rounded-md border border-border bg-popover px-2.5 py-2 text-xs text-popover-foreground shadow-popover animate-fade-in"
+          >
+            <div className="flex items-center gap-2">
+              <span className="font-mono font-medium">{hovered.variable.name}</span>
+              <span className={`rounded px-1.5 py-px text-[10px] font-medium ${VARIABLE_TONE[hovered.variable.source]}`}>
+                {VARIABLE_SOURCE_LABEL[hovered.variable.source]}
+              </span>
+            </div>
+            <div className="mt-1 break-all font-mono text-muted-foreground">
+              {hovered.variable.source === 'unresolved'
+                ? 'Not set in the active environment or globals.'
+                : hovered.variable.value === ''
+                  ? '(empty)'
+                  : hovered.variable.value}
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

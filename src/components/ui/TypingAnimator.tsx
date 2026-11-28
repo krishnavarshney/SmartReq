@@ -1,5 +1,4 @@
-import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import React, { useEffect, useRef, useState } from 'react';
 
 interface TypingAnimatorProps {
   text: string;
@@ -7,42 +6,36 @@ interface TypingAnimatorProps {
   onComplete?: () => void;
 }
 
-const CURSOR_BLINK_TRANSITION = {
-  duration: 0.4,
-  repeat: Infinity,
-  repeatType: 'reverse' as const,
-  ease: 'easeInOut' as const,
-};
-
+/** Briefly types out `text` (used when a tab is auto-named). Respects reduced motion. */
 export const TypingAnimator: React.FC<TypingAnimatorProps> = ({ text, className, onComplete }) => {
-  const [displayedText, setDisplayedText] = useState('');
+  const [count, setCount] = useState(0);
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   useEffect(() => {
-    setDisplayedText(''); // Reset on text change
-    if (text) {
-      let i = 0;
-      const intervalId = setInterval(() => {
-        setDisplayedText(prev => prev + text.charAt(i));
-        i++;
-        if (i >= text.length) {
-          clearInterval(intervalId);
-          if (onComplete) {
-            onComplete();
-          }
-        }
-      }, 50); // Typing speed
-      return () => clearInterval(intervalId);
+    const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!text || reduce) {
+      setCount(text.length);
+      onCompleteRef.current?.();
+      return;
     }
-  }, [text, onComplete]);
+    setCount(0);
+    let i = 0;
+    const step = Math.max(15, Math.min(40, 400 / text.length));
+    const intervalId = setInterval(() => {
+      i++;
+      setCount(i);
+      if (i >= text.length) {
+        clearInterval(intervalId);
+        onCompleteRef.current?.();
+      }
+    }, step);
+    return () => clearInterval(intervalId);
+  }, [text]);
 
   return (
-    <span className={className}>
-      {displayedText}
-      <motion.span
-        className="inline-block h-3.5 w-px bg-current ml-px"
-        animate={{ opacity: [0, 1] }}
-        transition={CURSOR_BLINK_TRANSITION}
-      />
+    <span className={className} aria-label={text}>
+      {text.slice(0, count)}
     </span>
   );
 };

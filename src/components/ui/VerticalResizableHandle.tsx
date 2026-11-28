@@ -1,9 +1,8 @@
 import React from 'react';
 
-export const VerticalResizableHandle: React.FC = () => {
-    return (
-        <div className="absolute -right-2 top-0 h-full w-4 cursor-col-resize flex items-center justify-center group z-10">
-            <div className="h-16 w-1 bg-accent/50 rounded-full group-hover:bg-primary transition-all duration-200 group-hover:w-1.5"></div>
-        </div>
-    );
-};
+/** Column-resize grip for re-resizable (a thin line that highlights on hover). */
+export const VerticalResizableHandle: React.FC = () => (
+  <div className="group absolute -right-1 top-0 z-10 flex h-full w-2 cursor-col-resize justify-center">
+    <div className="h-full w-px bg-transparent transition-colors duration-150 group-hover:bg-primary group-active:bg-primary" />
+  </div>
+);

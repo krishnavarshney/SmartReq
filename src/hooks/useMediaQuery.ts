@@ -1,17 +1,18 @@
 import { useState, useEffect } from 'react';
 
-export function useMediaQuery(query: string) {
-  const [matches, setMatches] = useState(false);
+const query = (q: string) => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(q).matches;
+
+/** Subscribe to a CSS media query. Reads the current value synchronously so the first render is correct. */
+export function useMediaQuery(q: string) {
+  const [matches, setMatches] = useState(() => query(q));
 
   useEffect(() => {
-    const mediaQuery = window.matchMedia(query);
+    const mediaQuery = window.matchMedia(q);
     setMatches(mediaQuery.matches);
-
     const handler = (event: MediaQueryListEvent) => setMatches(event.matches);
     mediaQuery.addEventListener('change', handler);
-
     return () => mediaQuery.removeEventListener('change', handler);
-  }, [query]);
+  }, [q]);
 
   return matches;
 }

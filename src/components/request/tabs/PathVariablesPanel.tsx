@@ -2,76 +2,88 @@ import React, { useMemo } from 'react';
 import { EmptyState } from '../../ui/EmptyState';
 import { Link } from '../../icons';
 import { KeyValueItem } from '../../../types';
+import { extractVariableNames, syncPathVariables } from '../../../utils/http-data';
+import { resolveVariable } from '../../../utils/interpolation';
+import { VARIABLE_SOURCE_LABEL, VARIABLE_TONE } from '../../ui/VariablePreviewInput';
+import { VarField } from '../VarField';
 
 interface PathVariablesPanelProps {
   url: string;
+  /** First data row in bulk mode; its columns resolve `{{variables}}`. */
   data: Record<string, string> | undefined;
   globals: KeyValueItem[];
+  /** Values for `:name` segments. */
+  pathVariables?: KeyValueItem[];
+  onPathVariablesChange?: (items: KeyValueItem[]) => void;
 }
 
-export const PathVariablesPanel: React.FC<PathVariablesPanelProps> = ({ url, data, globals }) => {
-  console.log('PathVariablesPanel: url =', url);
-  console.log('PathVariablesPanel: globals =', globals);
+const SectionTitle: React.FC<{ title: string; hint: React.ReactNode }> = ({ title, hint }) => (
+  <div className="mb-2">
+    <h3 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</h3>
+    <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>
+  </div>
+);
 
-  const variables = useMemo(() => {
-    const regex = /\{\{(\w+)\}\}/g;
-    const urlPath = url.split('?')[0];
-    const matches = urlPath.match(regex) || [];
-    const uniqueVariables = [...new Set(matches.map(v => v.replace(/{{|}}/g, '')))];
-    console.log('PathVariablesPanel: extracted variables =', uniqueVariables);
-    return uniqueVariables;
-  }, [url]);
+export const PathVariablesPanel: React.FC<PathVariablesPanelProps> = ({ url, data, globals, pathVariables, onPathVariablesChange }) => {
+  const rows = useMemo(() => syncPathVariables(url, pathVariables), [url, pathVariables]);
+  const urlVariables = useMemo(() => extractVariableNames(url).map((name) => resolveVariable(name, globals, data)), [url, globals, data]);
 
-  const globalMap = useMemo(() => {
-    const map = globals.reduce((acc, item) => {
-        if (item.enabled && item.key) {
-            acc[item.key.toLowerCase()] = item.value; // Convert key to lowercase
+  if (rows.length === 0 && urlVariables.length === 0) {
+    return (
+      <EmptyState
+        compact
+        icon={<Link />}
+        title="No variables in the URL"
+        message={
+          <>
+            Add a path variable like <code className="font-mono text-foreground">/users/:id</code> or an environment variable like{' '}
+            <code className="font-mono text-foreground">{'{{baseUrl}}'}</code>.
+          </>
         }
-        return acc;
-    }, {} as Record<string, string>);
-    console.log('PathVariablesPanel: globalMap =', map);
-    return map;
-  }, [globals]);
-
-  if (variables.length === 0) {
-    return <EmptyState icon={<Link className="h-12 w-12 stroke-1" />} message="No path variables found in the URL. Use {{variable}} syntax to define one." />;
+      />
+    );
   }
 
+  const setValue = (key: string, value: string) => onPathVariablesChange?.(rows.map((r) => (r.key === key ? { ...r, value } : r)));
+
   return (
-    <div className="p-4">
-      <div className="space-y-2">
-        <div className="grid grid-cols-3 gap-4 text-xs font-semibold text-muted-foreground px-2">
-          <div>Key</div>
-          <div className="col-span-2">Value (Preview from globals/env or data)</div>
-        </div>
-        {variables.map(key => {
-          // First check if the variable exists in globals/environment variables
-          const globalValue = globalMap[key.toLowerCase()];
-          // Then check if it exists in data (case-insensitive)
-          const dataValue = data ? Object.entries(data).find(([k]) => k.toLowerCase() === key.toLowerCase())?.[1] : undefined;
-          // Use global value first, then data value, then show "Not found"
-          const displayValue = globalValue || dataValue;
-          const valueSource = globalValue ? 'Global/Env' : dataValue ? 'Data' : 'Not found';
-          
-          console.log(`PathVariablesPanel: key = ${key}, globalValue = ${globalValue}, dataValue = ${dataValue}, displayValue = ${displayValue}`);
-          
-          return (
-            <div key={key} className="grid grid-cols-3 gap-4 items-center group p-2 rounded-md hover:bg-muted/50">
-              <div className="font-mono text-sm text-foreground">{key}</div>
-              <div className="col-span-2 font-mono text-sm text-amber-400 bg-muted px-2 py-1 rounded-md truncate" title={displayValue || 'Variable not found'}>
-                {displayValue ? (
-                  <span className="flex items-center gap-2">
-                    <span>{displayValue}</span>
-                    <span className="text-xs text-muted-foreground">({valueSource})</span>
-                  </span>
+    <div className="space-y-6 p-3">
+      {rows.length > 0 && (
+        <section>
+          <SectionTitle title="Path variables" hint={<>Values replace the matching <code className="font-mono">:name</code> segment and are URL-encoded.</>} />
+          <div className="overflow-hidden rounded-md border border-border">
+            {rows.map((row) => (
+              <div key={row.key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-center gap-2 border-b border-border px-2 py-1.5 last:border-b-0">
+                <label htmlFor={`pv-${row.key}`} className="truncate font-mono text-xs text-primary">
+                  :{row.key}
+                </label>
+                {onPathVariablesChange ? (
+                  <VarField id={`pv-${row.key}`} value={row.value} onChange={(v) => setValue(row.key, v)} variables={globals} placeholder="Value" aria-label={`Value for :${row.key}`} />
                 ) : (
-                  <span className="text-destructive-text italic">Not found in data</span>
+                  <span className="truncate font-mono text-xs">{row.value || <span className="text-muted-foreground">Not set</span>}</span>
                 )}
               </div>
-            </div>
-          );
-        })}
-      </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {urlVariables.length > 0 && (
+        <section>
+          <SectionTitle title="Variables in URL" hint="Resolved from the active environment, globals and (in bulk mode) the first data row." />
+          <div className="overflow-hidden rounded-md border border-border">
+            {urlVariables.map((v) => (
+              <div key={v.name} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] items-center gap-2 border-b border-border px-2 py-2 last:border-b-0">
+                <span className="truncate font-mono text-xs">{`{{${v.name}}}`}</span>
+                <span className={`truncate font-mono text-xs ${v.source === 'unresolved' ? 'italic text-muted-foreground' : 'text-foreground'}`} title={v.value}>
+                  {v.source === 'unresolved' ? 'Not defined' : v.value || '(empty)'}
+                </span>
+                <span className={`rounded px-1.5 py-px text-[10px] font-medium ${VARIABLE_TONE[v.source]}`}>{VARIABLE_SOURCE_LABEL[v.source]}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 };

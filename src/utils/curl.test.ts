@@ -35,3 +35,10 @@ describe('parseCurl', () => {
     expect(() => parseCurl('not a curl command')).toThrow();
   });
 });
+
+describe('parseCurl repeated keys', () => {
+  it('keeps each value of a repeated query key as its own param', () => {
+    const req = parseCurl(`curl 'https://x.com/a?id=1&id=2'`);
+    expect(req.queryParams?.filter((p) => p.key === 'id').map((p) => p.value)).toEqual(['1', '2']);
+  });
+});
