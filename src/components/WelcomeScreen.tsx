@@ -1,6 +1,13 @@
 import React from 'react';
-import { Button } from './ui/Button';
-import { Import, Plus, Rocket, FilePlus, SlidersHorizontal, TestTube2, Zap } from './icons';
+import { v4 as uuidv4 } from 'uuid';
+import { FilePlus, FolderPlus, Import, ChevronRight } from './icons';
+import { Play } from 'lucide-react';
+import { Logo } from './Logo';
+import { Kbd } from './ui/Tooltip';
+import { MODES, MOD_KEY } from './Header';
+import { useApp } from '../context/AppContext';
+import { useTabs } from '../context/TabsContext';
+import { createDefaultRequest } from '../utils/collection';
 
 interface WelcomeScreenProps {
   onCreateRequest: () => void;
@@ -8,67 +15,150 @@ interface WelcomeScreenProps {
   onImport: () => void;
 }
 
-export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
-  onCreateRequest,
-  onCreateCollection,
-  onImport,
-}) => {
+const EXAMPLE_URL = 'https://jsonplaceholder.typicode.com/users/1';
+
+const ActionRow: React.FC<{
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  hint?: React.ReactNode;
+  primary?: boolean;
+  onClick: () => void;
+}> = ({ icon, title, description, hint, primary, onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className="group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-accent focus-ring"
+  >
+    <span
+      className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border [&_svg]:h-4 [&_svg]:w-4 ${
+        primary ? 'border-primary/30 bg-primary/10 text-primary' : 'border-border bg-muted/60 text-muted-foreground group-hover:text-foreground'
+      }`}
+    >
+      {icon}
+    </span>
+    <span className="min-w-0 flex-1">
+      <span className="block text-[13px] font-medium text-foreground">{title}</span>
+      <span className="block truncate text-xs text-muted-foreground">{description}</span>
+    </span>
+    {hint && <span className="hidden flex-shrink-0 items-center gap-1 sm:flex">{hint}</span>}
+    <ChevronRight className="h-4 w-4 flex-shrink-0 text-muted-foreground/60 transition-colors group-hover:text-muted-foreground" />
+  </button>
+);
+
+export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onCreateRequest, onCreateCollection, onImport }) => {
+  const { setMode, setIsCommandPaletteOpen } = useApp();
+  const { setTabs, setActiveTabId } = useTabs();
+
+  const openExample = () => {
+    const tab = {
+      id: uuidv4(),
+      name: 'Example: get a user',
+      request: { ...createDefaultRequest(), method: 'GET' as const, url: EXAMPLE_URL },
+      isDirty: false,
+    };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+    setMode('single');
+  };
+
+  const shortcuts = [
+    { keys: [MOD_KEY, 'K'], label: 'Command palette' },
+    { keys: [MOD_KEY, 'Enter'], label: 'Send request' },
+    { keys: [MOD_KEY, 'S'], label: 'Save request' },
+    { keys: [MOD_KEY, 'B'], label: 'Toggle sidebar' },
+  ];
+
   return (
-    <div className="flex-grow flex items-center justify-center p-4 md:p-8">
-      <div className="text-center max-w-3xl w-full">
-        <div className="relative inline-block mb-6">
-            <div className="absolute -inset-4 bg-primary/20 rounded-full blur-2xl animate-pulse" />
-            <Rocket className="relative h-16 w-16 text-primary" />
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto flex min-h-full w-full max-w-[560px] flex-col justify-center px-4 py-8 sm:py-12">
+        <div className="flex items-center gap-3">
+          <Logo className="h-9 w-9" />
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold tracking-tight text-foreground">Welcome to SmartReq</h1>
+            <p className="text-[13px] text-muted-foreground">Send a request, run it against a dataset, or chain it into a flow.</p>
+          </div>
         </div>
-        
-        <h1 className="text-3xl md:text-4xl font-bold text-foreground tracking-tight">Welcome to SmartReq</h1>
-        <p className="mt-3 text-base md:text-lg text-muted-foreground max-w-xl mx-auto">
-          Your Next-Generation API Workspace. Craft, test, and analyze any API with precision and speed.
-        </p>
 
-        <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
-            <div className="bg-card/80 border border-border rounded-lg p-4 md:p-6 text-left">
-                <h2 className="text-lg font-semibold text-foreground mb-4">Get Started</h2>
-                <div className="space-y-3">
-                    <Button onClick={onCreateRequest} className="w-full justify-start" variant="primary">
-                        <FilePlus className="h-4 w-4 mr-3" />
-                        Create Your First Request
-                    </Button>
-                    <Button onClick={onCreateCollection} className="w-full justify-start" variant="secondary">
-                        <Plus className="h-4 w-4 mr-3" />
-                        Create a New Collection
-                    </Button>
-                    <Button onClick={onImport} className="w-full justify-start" variant="secondary">
-                        <Import className="h-4 w-4 mr-3" />
-                        Import a Collection
-                    </Button>
-                </div>
-            </div>
+        <section aria-labelledby="welcome-start" className="mt-6 rounded-xl border border-border bg-card p-1.5">
+          <h2 id="welcome-start" className="sr-only">
+            Get started
+          </h2>
+          <ActionRow
+            primary
+            icon={<FilePlus />}
+            title="New request"
+            description="Compose a request and send it"
+            hint={
+              <>
+                <Kbd>{MOD_KEY}</Kbd>
+                <Kbd>Enter</Kbd>
+                <span className="ml-1 text-[11px] text-muted-foreground">to send</span>
+              </>
+            }
+            onClick={onCreateRequest}
+          />
+          <ActionRow
+            icon={<Import />}
+            title="Import"
+            description="OpenAPI / Swagger, Postman collection or a cURL command"
+            onClick={onImport}
+          />
+          <ActionRow icon={<FolderPlus />} title="New collection" description="Group and save related requests" onClick={onCreateCollection} />
+          <ActionRow
+            icon={<Play />}
+            title="Try an example"
+            description={`GET ${EXAMPLE_URL.replace('https://', '')}`}
+            onClick={openExample}
+          />
+        </section>
 
-            <div className="bg-card/80 border border-border rounded-lg p-4 md:p-6 text-left">
-                <h2 className="text-lg font-semibold text-foreground mb-4">Quick Tour</h2>
-                <ul className="space-y-4 text-sm text-muted-foreground">
-                    <li className="flex items-start gap-3">
-                        <Zap className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
-                        <span>
-                            <strong className="text-foreground">Single & Bulk Mode:</strong> Seamlessly switch between debugging a single endpoint and running thousands of data-driven requests.
-                        </span>
-                    </li>
-                    <li className="flex items-start gap-3">
-                        <SlidersHorizontal className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
-                        <span>
-                            <strong className="text-foreground">Environments:</strong> Manage global variables for different stages like development, staging, and production.
-                        </span>
-                    </li>
-                    <li className="flex items-start gap-3">
-                        <TestTube2 className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
-                         <span>
-                            <strong className="text-foreground">Intelligent Body Builder:</strong> Generate hundreds of combinatorial request bodies from a single JSON template for exhaustive testing.
-                        </span>
-                    </li>
-                </ul>
-            </div>
-        </div>
+        <section aria-labelledby="welcome-modes" className="mt-6">
+          <h2 id="welcome-modes" className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Modes
+          </h2>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {MODES.map((m) => (
+              <button
+                key={m.value}
+                type="button"
+                onClick={() => (m.value === 'single' ? onCreateRequest() : setMode(m.value))}
+                className="flex items-start gap-2.5 rounded-lg border border-border bg-card px-3 py-2.5 text-left transition-colors hover:border-input hover:bg-accent/50 focus-ring"
+              >
+                <span className="mt-0.5 text-primary [&_svg]:h-4 [&_svg]:w-4">{m.icon}</span>
+                <span className="min-w-0">
+                  <span className="block text-[13px] font-medium text-foreground">{m.label}</span>
+                  <span className="block text-xs text-muted-foreground">{m.hint}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section aria-labelledby="welcome-keys" className="mt-6 hidden sm:block">
+          <h2 id="welcome-keys" className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Keyboard
+          </h2>
+          <ul className="grid grid-cols-2 gap-x-6 gap-y-1.5">
+            {shortcuts.map((s) => (
+              <li key={s.label} className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>{s.label}</span>
+                <span className="flex gap-1">
+                  {s.keys.map((k) => (
+                    <Kbd key={k}>{k}</Kbd>
+                  ))}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            onClick={() => setIsCommandPaletteOpen(true)}
+            className="mt-3 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-ring rounded"
+          >
+            Open the command palette to search everything
+          </button>
+        </section>
       </div>
     </div>
   );

@@ -67,6 +67,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onLogClick, openRequestInTab, 
             <button
               type="button"
               onClick={() => handleNavClick(panel)}
+              // Don't take focus on mouse click, or the focus-triggered tooltip lingers over the panel.
+              onMouseDown={(e) => e.preventDefault()}
               aria-label={label}
               aria-pressed={active}
               className={`relative flex h-9 w-9 items-center justify-center rounded-md transition-colors focus-ring ${
