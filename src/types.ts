@@ -9,7 +9,7 @@ export interface KeyValueItem {
 }
 
 export type AuthType = 'none' | 'bearer' | 'basic' | 'apiKey' | 'jwt' | 'oauth2';
-export type BodyType = 'none' | 'json' | 'form-data' | 'x-www-form-urlencoded' | 'graphql';
+export type BodyType = 'none' | 'json' | 'form-data' | 'x-www-form-urlencoded' | 'graphql' | 'raw';
 export type GrantType = 'authorization_code' | 'password_credentials' | 'client_credentials' | 'implicit';
 
 
@@ -47,11 +47,16 @@ export interface BodyDetails {
   // GraphQL
   graphqlQuery?: string;
   graphqlVariables?: string; // JSON string
+  // Raw text (XML, plain text, HTML...)
+  rawBody?: string;
+  rawContentType?: string;
 }
 
 export interface RequestSettings {
     sslVerification: boolean;
     followRedirects: boolean;
+    /** Request timeout in milliseconds. 0 disables the timeout; undefined uses the default (30s). */
+    timeoutMs?: number;
 }
 
 export interface DependencyRule {
@@ -71,6 +76,8 @@ export interface ApiRequest {
   testScript?: string;
   bodyBuilderVariables?: Record<string, string[]>;
   dependencyRules?: DependencyRule[];
+  /** Values for `:name` path segments in the URL. */
+  pathVariables?: KeyValueItem[];
 }
 
 export interface FinalApiRequest {
@@ -85,6 +92,8 @@ export interface FinalApiRequest {
         total: number;
     };
     settings: RequestSettings;
+    /** Set when the pre-request script threw; the request is not sent. */
+    preRequestError?: string;
 }
 
 export interface TestResult {
@@ -186,15 +195,19 @@ export interface VariableExtraction {
 
 export interface FlowNode {
   id: string;
-  requestId: string; // ID of the request in a collection
+  requestId: string; // ID of the request in a collection ('' for a step with its own inline request)
   name: string; // name of the request, copied for convenience
   extractions: VariableExtraction[];
+  /** Inline request owned by this step. Used when the step is not linked to a saved request. */
+  request?: ApiRequest;
 }
 
 export interface Flow {
   id: string;
   name: string;
   nodes: FlowNode[];
+  /** Stop the run at the first failing step (default true). */
+  stopOnFailure?: boolean;
 }
 
 export interface FlowRunResult {
