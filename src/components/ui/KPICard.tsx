@@ -2,21 +2,21 @@ import React from 'react';
 
 interface KPICardProps {
   title: string;
-  value: string;
-  description?: string;
+  value: React.ReactNode;
+  description?: React.ReactNode;
+  /** Optional element in the top-right corner (icon, badge). */
   children?: React.ReactNode;
   className?: string;
 }
 
-export const KPICard: React.FC<KPICardProps> = ({ title, value, description, children, className }) => {
-  return (
-    <div className={`bg-card/70 backdrop-blur-sm p-4 rounded-lg border border-border motion-base elev-0 hover:elev-1 ${className}`}>
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-muted-foreground">{title}</h3>
-        {children}
-      </div>
-      <p className="text-2xl font-bold text-foreground mt-1">{value}</p>
-      {description && <p className="text-xs text-muted-foreground mt-1">{description}</p>}
+/** Compact stat tile: label, headline number, one line of context. */
+export const KPICard: React.FC<KPICardProps> = ({ title, value, description, children, className = '' }) => (
+  <div className={`min-w-0 rounded-lg border border-border bg-card px-3 py-2.5 ${className}`}>
+    <div className="flex items-center justify-between gap-2">
+      <h3 className="truncate text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</h3>
+      {children}
     </div>
-  );
-};
+    <p className="mt-1 truncate font-mono text-lg font-semibold tabular-nums leading-6 text-foreground">{value}</p>
+    {description && <p className="mt-0.5 truncate text-xs text-muted-foreground">{description}</p>}
+  </div>
+);
