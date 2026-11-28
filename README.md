@@ -1,119 +1,63 @@
+# SmartReq
 
-# SmartReq: The Intelligent API Client
+A browser-based API client for debugging single requests, running a request template against a dataset, chaining requests into flows, and discovering endpoints.
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![React Version](https://img.shields.io/badge/react-19-blue?logo=react)
-![TypeScript](https://img.shields.io/badge/typescript-5.2-blue?logo=typescript)
+Everything runs in the browser. Workspaces, history and settings are stored in `localStorage`; nothing is sent anywhere except the APIs you call (and Google's Gemini API, only if you add a key for the AI features).
 
-A next-generation, browser-based API client designed for developers, analysts, and QA teams. SmartReq moves beyond simple requests, offering a powerful suite for single-request debugging, high-performance bulk processing, and intelligent, combinatorial request body generation.
+## Modes
 
-![SmartReq Demo](https://storage.googleapis.com/aistudio-hosting/readme-assets/api-client-demo.gif)
+### Request
+- Method, URL and Send in one bar. `{{variables}}` are highlighted by source (environment, data row, built-in) with their resolved value on hover; type `{{` for suggestions. Paste a `curl` command into the URL field to import it.
+- Params (kept in sync with the URL), path variables (`:id`), auth (Bearer, Basic, API key, JWT, OAuth 2.0 client-credentials/password), headers (with the auto-generated ones listed), body (JSON, form-data, urlencoded, raw text/XML/HTML/CSV, GraphQL), pre-request scripts, tests, per-request timeout and redirect settings.
+- Response viewer: status/time/size with breakdowns, pretty/raw/table views with search (`Ctrl/Cmd+F`), headers, tests, real resource timing (when the server sends `Timing-Allow-Origin`), charts, compare with earlier responses, export to CSV/XLS.
+- Cancel an in-flight request; network, CORS, timeout and script errors are reported with likely causes.
 
----
+### Bulk
+- Load data by upload (CSV/JSON), paste, or editing the grid directly. Every `{{column}}` the template uses is checked against your columns and globals before the run.
+- Run with 1–50 concurrent requests and an optional delay. Pause, resume, stop (in-flight requests are aborted), and retry only failed rows.
+- Live progress with rate and ETA, a filterable results grid, per-row request/response detail, a summary with p50/p95 latency and status distribution, and a flattened CSV export.
 
-## ✨ Key Features
+### Flow
+- Chain saved or flow-only requests and run them in order.
+- Pass data between steps with extraction rules (`{{token}}` from a body path or header) or direct references such as `{{steps.1.body.id}}`.
+- Per-step status, timing, request, response and tests; optional stop on failure; sequence diagram view.
 
-This platform is packed with professional-grade features designed to streamline your API testing and data processing workflows.
+### Discovery
+- Give it a base URL and it crawls same-host GET endpoints (up to 40 requests), using Gemini to suggest further paths from each response, then drafts an OpenAPI spec. Results can be opened in the Request tab or saved as a collection. Requires a Gemini API key (Settings → AI).
 
-### 🚀 Core Functionality
-*   **Full-Featured Request Composer:** Craft any HTTP request with support for `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, and more.
-*   **Intuitive Parameter & Header Editing:** A dynamic key-value editor that makes managing query parameters and headers effortless.
-*   **Comprehensive Auth Support:** Built-in helpers for **Bearer Token**, **Basic Auth**, and **API Key** authentication.
-*   **Flexible Request Bodies:** Support for **JSON** (with validation), **Form-Data**, and **x-www-form-urlencoded**.
-*   **Pre-request & Test Scripting:** Leverage JavaScript scripting to manipulate request data or assert response conditions.
+## Workspace
+- Collections and folders with drag and drop, inline rename, duplicate and keyboard navigation.
+- Environments plus globals; secret-looking values are masked.
+- History grouped by day; clicking an entry restores the request or bulk run.
+- Import OpenAPI 3 / Swagger (JSON or YAML), Postman collections (v2.0/v2.1) and cURL. Export/import the whole workspace as JSON from Settings.
+- Command palette (`Ctrl/Cmd+K`), light/dark/system themes, mobile layout.
 
-### 📊 Intelligent Response Handling
-*   **Multi-View Response Inspector:** Analyze response bodies in different formats:
-    *   **Raw View:** Syntax-highlighted text with search and word-wrap.
-    *   **Hierarchical Table View:** A powerful, recursive, and **collapsible table** for navigating complex JSON responses.
-    *   **HTML Preview:** Render HTML responses in a sandboxed iframe.
-*   **Drill-Down Navigation:** Seamlessly promote any nested JSON object or array into its own dedicated, filterable table view with breadcrumb navigation.
-*   **Data Export:** Export table data to **CSV** or **XLS** with a single click.
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl/Cmd+K` | Command palette |
+| `Ctrl/Cmd+Enter` | Send request |
+| `Ctrl/Cmd+S` | Save request |
+| `Ctrl/Cmd+B` | Toggle sidebar |
 
-### ⚡ Advanced Bulk Mode
-A dedicated workspace for running data-driven API tests at scale.
-*   **Versatile Data Input:** Populate your run with data by **uploading CSV/JSON files**, **pasting raw data**, or using the integrated spreadsheet editor.
-*   **Dynamic Request Templating:** Use `{{variable}}` syntax in your URL, headers, and body to inject data from your input source into each request.
-*   **High-Performance Execution:**
-    *   Run up to **50 requests in parallel** with the concurrency controller.
-    *   Throttle requests with a configurable **delay** to respect API rate limits.
-    *   **Live monitoring** dashboard with real-time progress, success/error counts, and requests per second.
-    *   Full execution control with **Pause, Resume, and Stop** buttons.
-*   **Rich Results Analysis:**
-    *   A sortable and filterable master results grid.
-    *   **Drill-down** into any individual result to see the full request/response pair.
-    *   Visualize the run with an aggregated **summary chart** of status codes.
-    *   **Export Consolidated Data:** Download a "flattened" CSV of the entire run, where nested JSON responses are expanded into their own columns for easy analysis.
+## Browser limits
+SmartReq makes requests with `fetch` from the page, so the browser's rules apply:
+- The API must allow your origin via CORS.
+- `Set-Cookie` and some headers are hidden from JavaScript; certain request headers (e.g. `Host`, `Cookie`) can't be set.
+- TLS verification can't be turned off.
+- Detailed timing is only available when the server sends `Timing-Allow-Origin`.
 
-### 🤖 Intelligent Body Builder
-The ultimate tool for generating complex, combinatorial test data.
-*   **Generate Data from JSON:** Use your request's JSON body as a template to generate hundreds of unique request bodies.
-*   **Multi-Value Variables:** Select keys to act as variables and provide multiple values for each.
-*   **Visual Dependency Engine:** Create dynamic relationships where one field's value is templated based on others (e.g., `description: "Profile for {{name}}"`).
-*   **Live Preview:** See a real-time preview of all generated combinations before running.
-*   **Seamless Bulk Mode Integration:** Send your generated data directly to the Bulk Mode data grid with a single click.
+## Development
 
-### 🖥️ Professional Workspace
-*   **Flexible Layouts:** Instantly switch between a **vertical (top/bottom)** or **horizontal (side-by-side)** view for the request and response panels.
-*   **Fully Responsive:** The entire interface is optimized for both desktop and mobile devices.
-*   **Persistent History:** All single and bulk runs are saved. Bulk runs are consolidated into a single entry for a clean history log. Clicking an entry restores the entire workspace to its previous state.
-*   **Global Environments:** Manage and use global variables across all your requests.
-*   **Light & Dark Themes:** Choose your preferred look or sync with your system settings.
+```bash
+npm ci
+npm run dev        # http://localhost:5173
+npm run typecheck
+npm test
+npm run build      # production bundle in dist/
+```
 
----
+Stack: React 19, TypeScript (strict), Vite 7, Tailwind CSS 3, Vitest. Fonts (Inter, JetBrains Mono) are self-hosted.
 
-## 🚀 How to Use
+## License
 
-The application is designed to be intuitive, with two primary modes of operation.
-
-### Single Request Mode
-
-1.  **Compose:** Use the main request panel to set the HTTP Method and URL.
-2.  **Detail:** Use the tabs below (Params, Authorization, Headers, Body) to configure the request details.
-3.  **Send:** Click the "Send" button.
-4.  **Analyze:** View the response in the panel on the right. Use the Raw, Table, or Preview views to inspect the data.
-
-### Bulk Mode Walkthrough (Example)
-
-1.  **Switch to Bulk Mode:** Click the "Bulk Mode" button.
-2.  **Provide Data:** In the **Data Source** panel, click "Paste from Clipboard" and paste the following CSV data:
-    ```csv
-    category,amount
-    Programming,2
-    Pun,1
-    ```
-3.  **Set Template:** In the request panel on the right, set the method to `GET` and the URL to:
-    ```
-    https://v2.jokeapi.dev/joke/{{category}}?amount={{amount}}
-    ```
-4.  **Execute:** In the bottom panel, click **Start Run**.
-5.  **Analyze:** Watch the results populate in real-time. Click any result row to drill down into the full request/response details.
-
----
-
-## 🛠️ Technology Stack
-
-*   **Frontend:** [React 19](https://react.dev/) & [TypeScript](https://www.typescriptlang.org/)
-*   **Styling:** [Tailwind CSS](https://tailwindcss.com/) for a utility-first styling approach.
-*   **Icons:** [Lucide React](https://lucide.dev/) for a beautiful and consistent icon set.
-*   **Data Parsing:** [PapaParse](https://www.papaparse.com/) for robust CSV handling.
-*   **UI Interactivity:** [Re-resizable](https://github.com/bokuweb/re-resizable) for panel resizing.
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! If you have suggestions for improvements or find a bug, please feel free to open an issue or submit a pull request.
-
-1.  Fork the repository.
-2.  Create your feature branch (`git checkout -b feature/AmazingFeature`).
-3.  Commit your changes (`git commit -m 'Add some AmazingFeature'`).
-4.  Push to the branch (`git push origin feature/AmazingFeature`).
-5.  Open a Pull Request.
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License.
+MIT
