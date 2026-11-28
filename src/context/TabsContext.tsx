@@ -1,8 +1,20 @@
 import React, { createContext, useContext, useCallback, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { usePersistentState } from '../hooks/usePersistentState';
-import { Tab, RequestItem, ApiRequest } from '../types';
+import { Tab, RequestItem, ApiRequest, BodyDetails } from '../types';
 import { createDefaultRequest } from '../utils/collection';
+import { validateJsonTemplate } from '../utils/http-data';
+
+/** Message describing why a body cannot be sent, or null. `{{variables}}` are allowed anywhere. */
+export const getBodyError = (body: BodyDetails | undefined): string | null => {
+  if (!body) return null;
+  if (body.type === 'json') return validateJsonTemplate(body.jsonBody || '');
+  if (body.type === 'graphql') {
+    const err = validateJsonTemplate(body.graphqlVariables || '');
+    return err ? `GraphQL variables: ${err}` : null;
+  }
+  return null;
+};
 
 interface SaveRequestState {
   isOpen: boolean;
@@ -19,12 +31,20 @@ interface TabsContextType {
   openTab: (requestItem: RequestItem | 'new', name?: string) => void;
   addTab: (request: ApiRequest) => void; // Add new function
   closeTab: (tabId: string) => void;
+  /** Close every tab except `tabId`. */
+  closeOtherTabs: (tabId: string) => void;
+  /** Open a copy of a tab (unsaved, not linked to the collection item). */
+  duplicateTab: (tabId: string) => void;
   updateTab: (tabId: string, updates: Partial<Tab>) => void;
   saveRequestState: SaveRequestState;
   setSaveRequestState: React.Dispatch<React.SetStateAction<SaveRequestState>>;
+  /** Derived from the active request's body, so switching tabs never leaves a stale value. */
   isBodyInvalid: boolean;
+  /** @deprecated Validity is derived from the active request; kept for compatibility (no-op). */
   setIsBodyInvalid: (isInvalid: boolean) => void;
 }
+
+const noop = () => {};
 
 const TabsContext = createContext<TabsContextType | undefined>(undefined);
 
@@ -32,10 +52,9 @@ export const TabsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [tabs, setTabs] = usePersistentState<Tab[]>('apiTabs_v1', []);
     const [activeTabId, setActiveTabId] = usePersistentState<string | null>('activeApiTabId_v1', null);
     const [saveRequestState, setSaveRequestState] = useState<SaveRequestState>({ isOpen: false, tabId: null });
-    const [isBodyInvalid, setIsBodyInvalid] = useState(false);
-
     const activeTab = React.useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId]);
     const activeRequest = activeTab?.request;
+    const isBodyInvalid = React.useMemo(() => getBodyError(activeRequest?.body) !== null, [activeRequest?.body]);
 
     const openTab = useCallback((requestItem: RequestItem | 'new', name?: string) => {
         if (requestItem !== 'new') {
@@ -72,21 +91,39 @@ export const TabsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, [setTabs, setActiveTabId]);
 
     const closeTab = useCallback((tabId: string) => {
-        setTabs(prev => {
-            const tabIndex = prev.findIndex(t => t.id === tabId);
-            const newTabs = prev.filter(t => t.id !== tabId);
+        const tabIndex = tabs.findIndex(t => t.id === tabId);
+        if (tabIndex < 0) return;
+        const remaining = tabs.filter(t => t.id !== tabId);
+        setTabs(remaining);
+        if (activeTabId === tabId) {
+            // Prefer the tab to the right (like browsers), then the one to the left.
+            const next = remaining[tabIndex] ?? remaining[tabIndex - 1];
+            setActiveTabId(next ? next.id : null);
+        }
+    }, [tabs, activeTabId, setTabs, setActiveTabId]);
 
-            if (activeTabId === tabId) {
-                if (newTabs.length > 0) {
-                    const newActiveIndex = Math.max(0, tabIndex - 1);
-                    setActiveTabId(newTabs[newActiveIndex].id);
-                } else {
-                    setActiveTabId(null);
-                }
-            }
-            return newTabs;
+    const closeOtherTabs = useCallback((tabId: string) => {
+        setTabs(prev => prev.filter(t => t.id === tabId));
+        setActiveTabId(tabId);
+    }, [setTabs, setActiveTabId]);
+
+    const duplicateTab = useCallback((tabId: string) => {
+        const source = tabs.find(t => t.id === tabId);
+        if (!source) return;
+        const copy: Tab = {
+            id: uuidv4(),
+            name: `${source.name} copy`,
+            request: JSON.parse(JSON.stringify(source.request)),
+            isDirty: true,
+        };
+        setTabs(prev => {
+            const idx = prev.findIndex(t => t.id === tabId);
+            const next = [...prev];
+            next.splice(idx + 1, 0, copy);
+            return next;
         });
-    }, [activeTabId, setTabs, setActiveTabId]);
+        setActiveTabId(copy.id);
+    }, [tabs, setTabs, setActiveTabId]);
 
     const updateTab = useCallback((tabId: string, updates: Partial<Tab>) => {
         setTabs(prev => prev.map(tab => tab.id === tabId ? { ...tab, ...updates } : tab));
@@ -97,9 +134,9 @@ export const TabsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       tabs, setTabs,
       activeTabId, setActiveTabId,
       activeTab, activeRequest,
-      openTab, closeTab, updateTab, addTab,
+      openTab, closeTab, closeOtherTabs, duplicateTab, updateTab, addTab,
       saveRequestState, setSaveRequestState,
-      isBodyInvalid, setIsBodyInvalid
+      isBodyInvalid, setIsBodyInvalid: noop
     }}>
       {children}
     </TabsContext.Provider>

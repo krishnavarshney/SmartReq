@@ -1,33 +1,42 @@
 import React from 'react';
 import { CodeEditor } from '../ui/CodeEditor';
+import { AlertTriangle } from '../icons';
 
 interface JsonEditorProps {
   value: string;
   onChange: (value: string) => void;
   onValidationChange: (isInvalid: boolean) => void;
+  placeholder?: string;
+  'aria-label'?: string;
+  minHeight?: number;
 }
 
-export const JsonEditor: React.FC<JsonEditorProps> = ({ value, onChange, onValidationChange }) => {
+/** JSON editor with live validation. `{{variables}}` are allowed anywhere, quoted or not. */
+export const JsonEditor: React.FC<JsonEditorProps> = ({ value, onChange, onValidationChange, placeholder, minHeight, ...rest }) => {
   const [error, setError] = React.useState<string | null>(null);
+  const showError = !!error && !!value.trim();
 
   React.useEffect(() => {
-    // If there is content and it's not just whitespace, validation depends on the error state.
-    // If there is no content, it's considered valid.
-    const isInvalid = value.trim() ? !!error : false;
-    onValidationChange(isInvalid);
-  }, [error, onValidationChange, value]);
+    onValidationChange(showError);
+  }, [showError, onValidationChange]);
 
   return (
-    <div className="flex flex-col h-full relative min-h-0">
-      <CodeEditor 
-        value={value}
-        onChange={onChange}
-        language="json"
-        onError={setError}
-      />
-      {error && value.trim() && (
-        <div className="absolute bottom-0 left-0 right-0 p-2 bg-destructive/20 text-destructive text-xs font-mono border-t border-destructive/30 animate-fade-in">
-          <strong>Invalid JSON:</strong> {error}
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1">
+        <CodeEditor
+          value={value}
+          onChange={onChange}
+          language="json"
+          onError={setError}
+          placeholder={placeholder ?? '{\n  "name": "{{name}}"\n}'}
+          aria-label={rest['aria-label'] ?? 'JSON body'}
+          minHeight={minHeight}
+        />
+      </div>
+      {showError && (
+        <div role="alert" className="flex flex-shrink-0 items-start gap-2 border-t border-destructive/30 bg-destructive-bg px-3 py-1.5 font-mono text-xs text-destructive-text">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <span className="min-w-0 break-words">{error}</span>
         </div>
       )}
     </div>

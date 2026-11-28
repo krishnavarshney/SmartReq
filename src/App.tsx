@@ -1,395 +1,336 @@
-import React, { useCallback, useRef, useEffect, useMemo, useState } from 'react';
-import { LogEntry, FinalApiRequest, ApiResponse, SingleRequestLog, BulkRunLog, RequestItem, Collection, ApiRequest, BulkResult, BulkRunState, KeyValueItem, FlowRunResult, DiscoverySession } from './types';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { v4 as uuidv4 } from 'uuid';
+import { FilePlus, FolderPlus, Import, LayoutHorizontal, LayoutVertical, Settings, FileText, History, Globe } from './components/icons';
+import { Monitor, Moon, Sun, PanelLeft } from 'lucide-react';
+import {
+  LogEntry,
+  ApiResponse,
+  SingleRequestLog,
+  RequestItem,
+  Collection,
+  ApiRequest,
+  KeyValueItem,
+  FinalApiRequest,
+  RequestNode,
+  Tab,
+} from './types';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { ToastContainer } from './components/ToastContainer';
 import { useToast } from './context/ToastContext';
-import { Header } from './components/Header';
-import { HeaderKPIs } from './components/HeaderKPIs';
+import { Header, MODES, MOD_KEY } from './components/Header';
 import { BulkWorkspace } from './components/bulk/BulkWorkspace';
-import { v4 as uuidv4 } from 'uuid';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { buildFinalRequest, realApiCall } from './api';
 import { SaveRequestModal } from './components/modals/SaveRequestModal';
 import { useUrlSync } from './hooks/useUrlSync';
 import { WelcomeScreen } from './components/WelcomeScreen';
-import { ImportModal } from './components/modals/ImportModal';
 import { runTestScript } from './utils/scripting';
 import { SingleRequestView } from './components/request/SingleRequestView';
-import { Tabs, TabsList, TabsTrigger } from './components/ui/Tabs';
-import { useApp } from './context/AppContext';
+import { AppMode, useApp } from './context/AppContext';
 import { useWorkspace } from './context/WorkspaceContext';
 import { useTabs } from './context/TabsContext';
 import { useLog } from './context/LogContext';
 import { useBulk } from './context/BulkContext';
+import { useTheme } from './context/ThemeContext';
 import { createDefaultRequest, addNode as addNodeUtil } from './utils/collection';
 import { OnboardingModal } from './components/modals/OnboardingModal';
 import { FlowWorkspace } from './components/flow/FlowWorkspace';
 import { DiscoveryWorkspace } from './components/discovery/DiscoveryWorkspace';
-import { GoogleGenAI } from '@google/genai';
-import { startDiscovery } from './utils/discovery';
-import { interpolateString } from './utils/interpolation';
+import { getApiKey } from './utils/apiKey';
 import { DiscoveryProvider } from './context/DiscoveryContext';
+import { CommandPalette, CommandItem } from './components/ui/CommandPalette';
+import { useBulkRunner } from './hooks/useBulkRunner';
+
+// Heavy parsers (OpenAPI, curl/tree-sitter) only load when the import dialog opens.
+const ImportModal = lazy(() => import('./components/modals/ImportModal').then((m) => ({ default: m.ImportModal })));
+
+const byteLength = (s: string) => new TextEncoder().encode(s).length;
+
+const collectRequests = (nodes: RequestNode[], path: string[] = []): { item: RequestItem; path: string }[] =>
+  nodes.flatMap((n) =>
+    n.type === 'request' ? [{ item: n, path: path.join(' / ') }] : collectRequests(n.children, [...path, n.name])
+  );
 
 const AppContent: React.FC = () => {
-  const { layout, setLayout, isSettingsOpen, setIsSettingsOpen, isSidebarOpen, setIsSidebarOpen, isImportModalOpen, setIsImportModalOpen, isOnboardingOpen, setIsOnboardingOpen, hasOnboarded } = useApp();
-  const { workspace, setWorkspace, globals, handleCreateCollection, handleImportCollection, addNode, updateNode, findNode, activeEnvironmentId } = useWorkspace();
-  const { tabs, setTabs, openTab, updateTab, activeTab, activeRequest, closeTab, saveRequestState, setSaveRequestState, activeTabId, setActiveTabId, setIsBodyInvalid, isBodyInvalid } = useTabs();
-  const { logs, setLogs } = useLog();
-  const { bulkData, setBulkData, bulkResults, setBulkResults, bulkRunState, setBulkRunState, bulkSettings, setBulkSettings, bulkRequest, setBulkRequest, bulkRunControllerRef, isPausedRef } = useBulk();
-  
-  const [isLoading, setIsLoading] = React.useState(false);
-  const [mode, setMode] = React.useState<'single' | 'bulk' | 'flow' | 'discovery'>('single');
-  const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(null);
+  const {
+    mode,
+    setMode,
+    layout,
+    setLayout,
+    isSettingsOpen,
+    setIsSettingsOpen,
+    isSidebarOpen,
+    setIsSidebarOpen,
+    revealSidebarPanel,
+    isImportModalOpen,
+    setIsImportModalOpen,
+    setIsOnboardingOpen,
+    hasOnboarded,
+    isCommandPaletteOpen,
+    setIsCommandPaletteOpen,
+    isMobile,
+  } = useApp();
+  const { setTheme } = useTheme();
+  const { workspace, setWorkspace, globals, handleCreateCollection, handleImportCollection, addNode, updateNode, findNode, activeEnvironmentId } =
+    useWorkspace();
+  const { tabs, setTabs, openTab, updateTab, activeTab, activeRequest, saveRequestState, setSaveRequestState, setActiveTabId, isBodyInvalid } =
+    useTabs();
+  const { setLogs } = useLog();
+  const { bulkData, setBulkData, bulkResults, setBulkResults, bulkRunState, setBulkRunState, bulkSettings, setBulkSettings, bulkRequest, setBulkRequest } =
+    useBulk();
+  const { addToast } = useToast();
 
+  const [isLoading, setIsLoading] = useState(false);
+  const [isTestSending, setIsTestSending] = useState(false);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isGeneratingTests, setIsGeneratingTests] = useState(false);
   const [composerActiveTab, setComposerActiveTab] = useState<string | null>(null);
-  
-  const discoveryAbortController = useRef<AbortController | null>(null);
 
-  const { addToast } = useToast();
-  
-  const handleRequestUpdate = useCallback((updates: Partial<ApiRequest>) => {
-    if (activeTab && activeRequest) {
-      updateTab(activeTab.id, { 
-        request: { ...activeRequest, ...updates },
-        isDirty: true 
-      });
-    }
-  }, [activeTab, activeRequest, updateTab]);
-  
+  const handleRequestUpdate = useCallback(
+    (updates: Partial<ApiRequest>, options?: { silent?: boolean }) => {
+      if (activeTab && activeRequest) {
+        updateTab(activeTab.id, { request: { ...activeRequest, ...updates }, isDirty: options?.silent ? activeTab.isDirty : true });
+      }
+    },
+    [activeTab, activeRequest, updateTab]
+  );
+
   useUrlSync(activeRequest, handleRequestUpdate);
 
-  // Onboarding logic
+  // First-run onboarding
   useEffect(() => {
-    if (!hasOnboarded) {
-      const timer = setTimeout(() => {
-        setIsOnboardingOpen(true);
-      }, 1000); // Small delay to let the app load
-      return () => clearTimeout(timer);
-    }
+    if (hasOnboarded) return;
+    const timer = setTimeout(() => setIsOnboardingOpen(true), 600);
+    return () => clearTimeout(timer);
   }, [hasOnboarded, setIsOnboardingOpen]);
 
-  // Tab auto-naming logic
-  useEffect(() => {
-    if (activeTab && activeTab.name === 'New Request' && activeRequest?.url) {
-      try {
-        const url = new URL(activeRequest.url);
-        // Get the last non-empty path segment, or the hostname
-        const pathSegments = url.pathname.split('/').filter(Boolean);
-        const newName = pathSegments.pop() || url.hostname.replace('www.', '');
-        if (newName && newName !== activeTab.name) {
-          updateTab(activeTab.id, { name: newName, isRenaming: true });
-        }
-      } catch (e) {
-        // Invalid URL, do nothing
+  const allVariables: KeyValueItem[] = useMemo(() => {
+    const activeEnv = workspace.environments.find((e) => e.id === activeEnvironmentId);
+    return [...globals, ...(activeEnv ? activeEnv.variables : [])];
+  }, [workspace.environments, activeEnvironmentId, globals]);
+
+  /** Build, send and test one request. Pure: no logging or UI state. */
+  const executeRequest = useCallback(
+    async (
+      requestToSend: ApiRequest,
+      dataForRow: Record<string, string> = {},
+      signal?: AbortSignal
+    ): Promise<{ request: FinalApiRequest; response: ApiResponse }> => {
+      const finalRequest = buildFinalRequest(requestToSend, dataForRow, allVariables);
+      let response = await realApiCall(finalRequest, { signal });
+
+      if (requestToSend.testScript) {
+        const scriptEnv = allVariables.reduce(
+          (acc, v) => {
+            if (v.enabled && v.key) acc[v.key] = v.value;
+            return acc;
+          },
+          {} as Record<string, string>
+        );
+        const testResults = runTestScript(requestToSend.testScript, response, { ...scriptEnv, ...dataForRow });
+        response = { ...response, testResults };
       }
-    }
-  }, [activeRequest?.url, activeTab, activeTabId, updateTab]);
 
-  const activeEnvironmentVariables = useMemo(() => {
-    const activeEnv = workspace.environments.find(e => e.id === activeEnvironmentId);
-    return activeEnv ? activeEnv.variables : [];
-  }, [workspace.environments, activeEnvironmentId]);
+      const headerBytes = byteLength(
+        finalRequest.headers
+          .filter((h) => h.enabled)
+          .map((h) => `${h.key}: ${h.value}`)
+          .join('\n')
+      );
+      const bodyBytes = typeof finalRequest.body === 'string' ? byteLength(finalRequest.body) : 0;
+      finalRequest.size = { headers: headerBytes, body: bodyBytes, total: headerBytes + bodyBytes };
+      return { request: finalRequest, response };
+    },
+    [allVariables]
+  );
 
-  const allVariables: KeyValueItem[] = useMemo(() => [...globals, ...activeEnvironmentVariables], [globals, activeEnvironmentVariables]);
+  const sendControllerRef = useRef<AbortController | null>(null);
+  const handleCancelRequest = useCallback(() => sendControllerRef.current?.abort(), []);
 
-  const handleSend = useCallback(async (requestToSend: ApiRequest, dataForRow: Record<string, string> = {}): Promise<{ success: boolean, response: ApiResponse }> => {
-    if (mode === 'single') setIsLoading(true);
-    
-    const finalRequest = buildFinalRequest(requestToSend, dataForRow, allVariables);
-    
-    let apiResponse = await realApiCall(finalRequest);
-    
-    if (requestToSend.testScript) {
-        const scriptEnv = allVariables.reduce((acc, v) => {
-          if (v.enabled && v.key) acc[v.key] = v.value;
-          return acc;
-        }, {} as Record<string, string>);
-
-        const testResults = runTestScript(requestToSend.testScript, apiResponse, { ...scriptEnv, ...dataForRow });
-        apiResponse = { ...apiResponse, testResults };
-    }
-
-    const requestHeadersString = finalRequest.headers
-        .filter(h => h.enabled)
-        .map(h => `${h.key}: ${h.value}`).join('\n');
-    const requestBodySize = typeof finalRequest.body === 'string' ? new TextEncoder().encode(finalRequest.body).length : 0;
-    const headerBytes = new TextEncoder().encode(requestHeadersString).length;
-    finalRequest.size = {
-        headers: headerBytes,
-        body: requestBodySize,
-        total: headerBytes + requestBodySize
-    };
-
-    if (mode === 'single' && activeTab) {
-        const newLog: SingleRequestLog = {
-            id: Date.now(),
-            mode: 'single',
-            requestId: activeTab.originalRequestId,
-            originalRequest: requestToSend,
-            request: finalRequest,
-            response: apiResponse,
-            timestamp: new Date().toISOString(),
-        };
-        setLogs(prev => [newLog, ...prev.slice(0, 99)]);
-        
-        if (activeTab.originalRequestId) {
-          updateNode(activeTab.originalRequestId, (node) => {
-            if (node.type === 'request') {
-              node.responses = [newLog, ...(node.responses || []).slice(0, 19)];
-            }
-            return node;
-          });
-        }
-        
-        updateTab(activeTab.id, { latestResponse: apiResponse });
-    }
-    
-    const isSuccess = apiResponse.status >= 200 && apiResponse.status < 300;
-    return { success: isSuccess, response: apiResponse };
-
-  }, [mode, allVariables, activeTab, setLogs, updateTab, updateNode]);
-
-  const handleSingleSend = () => {
-    if (!activeRequest) return;
-    if (isBodyInvalid) {
-      addToast('Request body is invalid JSON. Please fix it before sending.', 'error');
+  const handleSingleSend = useCallback(async () => {
+    if (!activeRequest || !activeTab || isLoading) return;
+    if (!activeRequest.url.trim()) {
+      addToast('Enter a URL before sending.', 'info');
       return;
     }
-    handleSend(activeRequest, {}).finally(() => setIsLoading(false));
-  };
-
-  const handleTestSend = useCallback(() => {
-    if (bulkData.length > 0) {
-        setIsLoading(true);
-        handleSend(bulkRequest, bulkData[0]).then(({ response }) => {
-            addToast(`Test request sent: ${response.status} ${response.statusText}`, response.status >= 200 && response.status < 300 ? 'success' : 'error');
-        }).finally(() => setIsLoading(false));
-    } else {
-        addToast('No data available to send a test request.', 'info');
+    if (isBodyInvalid) {
+      addToast('Request body is invalid JSON. Fix it before sending.', 'error');
+      return;
     }
-  }, [bulkData, bulkRequest, handleSend, addToast]);
-  
-  const handleSaveRequest = useCallback(() => {
-    if (!activeTab || !activeTab.isDirty) return;
-    
-    if (activeTab.originalRequestId) {
-      updateNode(activeTab.originalRequestId, (node) => {
-        if (node.type === 'request') {
-          node.request = activeTab.request;
-          node.name = activeTab.name;
+    const tabId = activeTab.id;
+    const originalRequestId = activeTab.originalRequestId;
+    setIsLoading(true);
+    const controller = new AbortController();
+    sendControllerRef.current = controller;
+    try {
+      const { request, response } = await executeRequest(activeRequest, {}, controller.signal);
+      const newLog: SingleRequestLog = {
+        id: Date.now(),
+        mode: 'single',
+        requestId: originalRequestId,
+        originalRequest: activeRequest,
+        request,
+        response,
+        timestamp: new Date().toISOString(),
+      };
+      setLogs((prev) => [newLog, ...prev.slice(0, 99)]);
+      if (originalRequestId) {
+        updateNode(originalRequestId, (node) =>
+          node.type === 'request' ? { ...node, responses: [newLog, ...(node.responses || []).slice(0, 19)] } : node
+        );
+      }
+      // Name untitled tabs after the URL on first send, not on every keystroke
+      // (typing "http://l" used to rename the tab "l" permanently).
+      const updates: Partial<Tab> = { latestResponse: response };
+      if (activeTab.name === 'New Request' && !originalRequestId) {
+        try {
+          const url = new URL(request.url);
+          const name = url.pathname.split('/').filter(Boolean).pop() || url.hostname.replace(/^www\./, '');
+          if (name) updates.name = name;
+        } catch {
+          /* leave the default name */
         }
-        return node;
-      });
+      }
+      updateTab(tabId, updates);
+    } finally {
+      if (sendControllerRef.current === controller) sendControllerRef.current = null;
+      setIsLoading(false);
+    }
+  }, [activeRequest, activeTab, isLoading, isBodyInvalid, executeRequest, setLogs, updateNode, updateTab, addToast]);
+
+  const bulkRunner = useBulkRunner(executeRequest);
+
+  const handleTestSend = useCallback(async () => {
+    if (bulkData.length === 0) {
+      addToast('Add data rows first, then send a test request with row 1.', 'info');
+      return;
+    }
+    setIsTestSending(true);
+    try {
+      const { response } = await executeRequest(bulkRequest, bulkData[0]);
+      const ok = response.status >= 200 && response.status < 300;
+      addToast(`Row 1 test: ${response.status || 'Failed'} ${response.statusText}`, ok ? 'success' : 'error');
+    } finally {
+      setIsTestSending(false);
+    }
+  }, [bulkData, bulkRequest, executeRequest, addToast]);
+
+  const handleSaveRequest = useCallback(() => {
+    if (!activeTab) return;
+    if (activeTab.originalRequestId && findNode(activeTab.originalRequestId)) {
+      if (!activeTab.isDirty) return;
+      updateNode(activeTab.originalRequestId, (node) =>
+        node.type === 'request' ? { ...node, request: activeTab.request, name: activeTab.name } : node
+      );
       updateTab(activeTab.id, { isDirty: false });
-      addToast('Request saved!', 'success');
+      addToast('Request saved', 'success');
     } else {
       setSaveRequestState({ isOpen: true, tabId: activeTab.id });
     }
-  }, [activeTab, updateNode, updateTab, addToast, setSaveRequestState]);
-  
-  const handleSaveAsRequest = useCallback((name: string, parentId: string) => {
-    if (!saveRequestState.tabId) return;
-    const tabToSave = tabs.find(t => t.id === saveRequestState.tabId);
-    if (!tabToSave) return;
-    
-    const newRequestItem: RequestItem = {
-      id: uuidv4(),
-      type: 'request',
-      name: name,
-      request: tabToSave.request,
-      responses: [],
-    };
-    
-    addNode(newRequestItem, parentId);
-    
-    updateTab(saveRequestState.tabId, { 
-      isDirty: false, 
-      name: name, 
-      originalRequestId: newRequestItem.id 
-    });
-    
-    setSaveRequestState({ isOpen: false, tabId: null });
-    addToast('Request saved!', 'success');
-  }, [addNode, tabs, updateTab, saveRequestState.tabId, setSaveRequestState, addToast]);
+  }, [activeTab, findNode, updateNode, updateTab, addToast, setSaveRequestState]);
+
+  const handleSaveAsRequest = useCallback(
+    (name: string, parentId: string) => {
+      if (!saveRequestState.tabId) return;
+      const tabToSave = tabs.find((t) => t.id === saveRequestState.tabId);
+      if (!tabToSave) return;
+      const newRequestItem: RequestItem = { id: uuidv4(), type: 'request', name, request: tabToSave.request, responses: [] };
+      addNode(newRequestItem, parentId);
+      updateTab(saveRequestState.tabId, { isDirty: false, name, originalRequestId: newRequestItem.id });
+      setSaveRequestState({ isOpen: false, tabId: null });
+      addToast('Request saved', 'success');
+    },
+    [addNode, tabs, updateTab, saveRequestState.tabId, setSaveRequestState, addToast]
+  );
 
   const handleNewRequest = useCallback(() => {
-    let parentId: string | undefined = undefined;
+    let parentId: string | undefined;
     let currentWorkspace = workspace;
-    
     const selectedNode = selectedNodeId ? findNode(selectedNodeId) : null;
     if (selectedNode && selectedNode.type !== 'request') {
-        parentId = selectedNode.id;
+      parentId = selectedNode.id;
     } else if (workspace.collections.length > 0) {
-        parentId = workspace.collections[0].id;
+      parentId = workspace.collections[0].id;
     } else {
-        const newCollection: Collection = {
-            id: uuidv4(),
-            type: 'collection',
-            name: 'My Collection',
-            children: [],
-        };
-        currentWorkspace = { ...workspace, collections: [newCollection] };
-        setWorkspace(currentWorkspace);
-        parentId = newCollection.id;
+      const newCollection: Collection = { id: uuidv4(), type: 'collection', name: 'My Collection', children: [] };
+      currentWorkspace = { ...workspace, collections: [newCollection] };
+      parentId = newCollection.id;
     }
-    
-    const newRequestItem: RequestItem = {
-      id: uuidv4(),
-      type: 'request',
-      name: 'New Request',
-      request: createDefaultRequest(),
-      responses: [],
-    };
-
-    const updatedWorkspace = addNodeUtil(currentWorkspace, newRequestItem, parentId);
-    setWorkspace(updatedWorkspace);
-    
+    const newRequestItem: RequestItem = { id: uuidv4(), type: 'request', name: 'New Request', request: createDefaultRequest(), responses: [] };
+    setWorkspace(addNodeUtil(currentWorkspace, newRequestItem, parentId));
     openTab(newRequestItem, 'New Request');
-  }, [workspace, selectedNodeId, findNode, setWorkspace, openTab]);
+    setMode('single');
+  }, [workspace, selectedNodeId, findNode, setWorkspace, openTab, setMode]);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-        if ((event.ctrlKey || event.metaKey) && event.key === 's') {
-            event.preventDefault();
-            if (activeTab?.isDirty) {
-                handleSaveRequest();
-            }
-        }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-        window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [activeTab, handleSaveRequest]);
+  const handleGenerateBulkData = useCallback(
+    (data: Record<string, unknown>[]) => {
+      const stringData = data.map((row) =>
+        Object.entries(row).reduce(
+          (acc, [key, value]) => {
+            acc[key] = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value);
+            return acc;
+          },
+          {} as Record<string, string>
+        )
+      );
+      setBulkData(stringData);
+      setMode('bulk');
+      addToast(`Generated ${data.length} rows for Bulk mode`, 'success');
+    },
+    [setBulkData, setMode, addToast]
+  );
 
-  const runBulkRequests = useCallback(async (controller: AbortController) => {
-    setBulkRunState('running');
-    const initialResults: BulkResult[] = bulkData.map((data, i) => ({
-      id: i + 1, data, request: {} as FinalApiRequest, response: {} as ApiResponse, status: 'pending'
-    }));
-    setBulkResults(initialResults);
-
-    const queue = [...initialResults];
-    const worker = async () => {
-      while (queue.length > 0) {
-        if (controller.signal.aborted) {
-          break;
-        }
-        if (isPausedRef.current) {
-          setBulkRunState('paused');
-          break;
-        }
-        const item = queue.shift();
-        if (!item) continue;
-        
-        const { success, response } = await handleSend(bulkRequest, item.data);
-        const finalRequest = buildFinalRequest(bulkRequest, item.data, allVariables);
-        
-        setBulkResults(prev => prev.map(r => r.id === item.id ? { ...item, request: finalRequest, response, status: success ? 'success' : 'error' } : r));
-        if (bulkSettings.delay > 0) await new Promise(r => setTimeout(r, bulkSettings.delay));
-      }
-    };
-    await Promise.all(Array(bulkSettings.concurrency).fill(0).map(worker));
-    if (!controller.signal.aborted && !isPausedRef.current) setBulkRunState('finished');
-  }, [bulkData, bulkRequest, allVariables, handleSend, bulkSettings.concurrency, bulkSettings.delay, setBulkRunState, setBulkResults, isPausedRef]);
-
-  const prevRunStateRef = useRef<BulkRunState | undefined>(undefined);
-  useEffect(() => {
-    if (prevRunStateRef.current !== 'finished' && bulkRunState === 'finished') {
-       const newLog: BulkRunLog = {
-         id: Date.now(),
-         mode: 'bulk',
-         requestTemplate: bulkRequest,
-         data: bulkData,
-         settings: bulkSettings,
-         results: bulkResults,
-         timestamp: new Date().toISOString()
-       };
-       setLogs(prev => [newLog, ...prev.slice(0, 99)]);
-    }
-    prevRunStateRef.current = bulkRunState;
-  }, [bulkRunState, bulkRequest, bulkData, bulkSettings, bulkResults, setLogs]);
-
-
-  const handleBulkRun = useCallback(() => {
-    isPausedRef.current = false;
-    const controller = new AbortController();
-    bulkRunControllerRef.current = controller;
-    runBulkRequests(controller);
-  }, [runBulkRequests, isPausedRef, bulkRunControllerRef]);
-
-  const handleBulkPause = () => { isPausedRef.current = true; };
-  const handleBulkResume = () => { isPausedRef.current = false; setBulkRunState('running'); };
-  const handleBulkStop = () => {
-    isPausedRef.current = false;
-    bulkRunControllerRef.current?.abort();
-    setBulkRunState('stopped');
-  };
-  
-  const handleGenerateBulkData = (data: Record<string, any>[]) => {
-    const stringData = data.map(row =>
-      Object.entries(row).reduce((acc, [key, value]) => {
-        acc[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
-        return acc;
-      }, {} as Record<string, string>)
-    );
-    setBulkData(stringData);
-    setMode('bulk');
-    addToast(`Generated ${data.length} data rows for bulk execution.`, 'success');
-  };
-
-  const handleLogClick = useCallback((log: LogEntry) => {
-    if (log.mode === 'single') {
+  const handleLogClick = useCallback(
+    (log: LogEntry) => {
+      if (log.mode === 'single') {
         const { originalRequest, response, requestId } = log;
         const newTab = {
-            id: uuidv4(),
-            name: originalRequest.url.split('?')[0].split('/').pop() || 'Request from Log',
-            request: JSON.parse(JSON.stringify(originalRequest)), // Deep clone
-            isDirty: false,
-            originalRequestId: requestId,
-            latestResponse: response,
+          id: uuidv4(),
+          name: originalRequest.url.split('?')[0].split('/').filter(Boolean).pop() || 'Request from history',
+          request: structuredClone(originalRequest),
+          isDirty: false,
+          originalRequestId: requestId,
+          latestResponse: response,
         };
-
-        setTabs(prev => [...prev, newTab]);
+        setTabs((prev) => [...prev, newTab]);
         setActiveTabId(newTab.id);
         setMode('single');
-        addToast('Loaded request from history', 'info');
-    } else { // bulk
-        setMode('bulk');
+      } else {
+        bulkRunner.stop();
         setBulkRequest(log.requestTemplate);
         setBulkData(log.data);
-        setBulkResults(log.results);
         setBulkSettings(log.settings);
+        bulkRunner.restore(log.results);
         setBulkRunState('finished');
-        addToast('Loaded bulk run from history', 'info');
-    }
-  }, [setTabs, setActiveTabId, setMode, addToast, setBulkRequest, setBulkData, setBulkResults, setBulkSettings, setBulkRunState]);
+        setMode('bulk');
+      }
+      if (isMobile) setIsSidebarOpen(false);
+    },
+    [setTabs, setActiveTabId, setMode, setBulkRequest, setBulkData, setBulkSettings, setBulkRunState, bulkRunner, isMobile, setIsSidebarOpen]
+  );
 
   const handleClearCache = useCallback(() => {
-    // Replace browser confirm with modal-based confirmation handled in SettingsModal footer
     try {
       window.localStorage.clear();
-      addToast('Cache cleared successfully. Reloading...', 'success');
-      setTimeout(() => window.location.reload(), 1000);
-    } catch (error) {
-      addToast('Failed to clear cache.', 'error');
-      console.error('Failed to clear cache', error);
+      addToast('All local data cleared. Reloading…', 'success');
+      setTimeout(() => window.location.reload(), 800);
+    } catch {
+      addToast('Could not clear local data.', 'error');
     }
   }, [addToast]);
 
   const handleGenerateTests = useCallback(async () => {
     if (!activeTab?.latestResponse) return;
-    if (!(import.meta as any).env.VITE_GEMINI_API_KEY) {
-      addToast('Gemini API key is not configured. Set VITE_GEMINI_API_KEY in your .env.', 'error');
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      addToast('Add a Gemini API key in Settings to generate tests.', 'error');
+      setIsSettingsOpen(true);
       return;
     }
-
     setIsGeneratingTests(true);
-    
+    const tabId = activeTab.id;
     const response = activeTab.latestResponse;
     const bodyString = typeof response.body === 'string' ? response.body : JSON.stringify(response.body, null, 2);
-
     const prompt = `You are an expert JavaScript developer writing test scripts for an API client. The test environment provides a 'pm' object.
 - 'const response = pm.response.json()' gets the JSON body.
 - 'pm.test("Test Name", () => { pm.expect(value).to.eql(expected); })' defines a test.
@@ -403,164 +344,206 @@ Based on this API response:
 - Body (first 1000 chars): ${bodyString.substring(0, 1000)}
 
 Write a comprehensive test suite. Include tests for status code, important headers like Content-Type, and key properties in the body. Check for data types and non-null values where appropriate.
-Respond ONLY with the raw JavaScript code block. Do not include markdown fences like '''javascript or any other explanatory text.`;
-
+Respond ONLY with the raw JavaScript code. Do not include markdown fences or any explanatory text.`;
     try {
-        const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.VITE_GEMINI_API_KEY });
-        const geminiResponse = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-        });
-
-        const generatedScript = geminiResponse.text.trim();
-        if (activeRequest) {
-            const currentScript = activeRequest.testScript || '';
-            const newScript = currentScript ? `${currentScript}\n\n// AI Generated Tests\n${generatedScript}` : generatedScript;
-            handleRequestUpdate({ testScript: newScript });
-            setComposerActiveTab('Tests'); // Switch to tests tab
-            addToast('AI tests generated successfully!', 'success');
-        }
+      const { GoogleGenAI } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey });
+      const result = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+      const generated = (result.text ?? '').replace(/^```(?:javascript|js)?\s*|```\s*$/g, '').trim();
+      if (!generated) throw new Error('Empty response');
+      // Merge into the tab's latest state: the user may have edited the request
+      // while Gemini was answering, and the closure's activeRequest is stale.
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== tabId) return t;
+          const current = t.request.testScript || '';
+          const testScript = current ? `${current}\n\n// AI generated tests\n${generated}` : generated;
+          return { ...t, request: { ...t.request, testScript }, isDirty: true };
+        })
+      );
+      setComposerActiveTab('Tests');
+      addToast('Tests generated', 'success');
     } catch (e) {
-        console.error("AI test generation failed:", e);
-        addToast('Failed to generate tests.', 'error');
+      addToast(`Test generation failed${e instanceof Error && e.message ? `: ${e.message}` : ''}`, 'error');
     } finally {
-        setIsGeneratingTests(false);
+      setIsGeneratingTests(false);
     }
-  }, [activeTab?.latestResponse, activeRequest, addToast, handleRequestUpdate, setComposerActiveTab]);
-  
+  }, [activeTab?.latestResponse, activeTab?.id, setTabs, addToast, setIsSettingsOpen]);
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod) return;
+      const key = event.key.toLowerCase();
+      if (key === 'k') {
+        event.preventDefault();
+        setIsCommandPaletteOpen((v) => !v);
+      } else if (key === 'b') {
+        event.preventDefault();
+        setIsSidebarOpen((v) => !v);
+      } else if (key === 's' && mode === 'single') {
+        event.preventDefault();
+        handleSaveRequest();
+      } else if (key === 'enter' && mode === 'single') {
+        event.preventDefault();
+        void handleSingleSend();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [mode, handleSaveRequest, handleSingleSend, setIsCommandPaletteOpen, setIsSidebarOpen]);
+
+  const paletteItems = useMemo<CommandItem[]>(() => {
+    const items: CommandItem[] = [
+      { id: 'new-request', title: 'New request', group: 'Actions', icon: <FilePlus />, action: handleNewRequest },
+      { id: 'new-collection', title: 'New collection', group: 'Actions', icon: <FolderPlus />, action: handleCreateCollection },
+      { id: 'import', title: 'Import collection…', group: 'Actions', icon: <Import />, keywords: 'openapi swagger postman curl', action: () => setIsImportModalOpen(true) },
+      ...MODES.map((m) => ({
+        id: `mode-${m.value}`,
+        title: `Go to ${m.label}`,
+        group: 'Navigate',
+        icon: m.icon,
+        action: () => setMode(m.value as AppMode),
+      })),
+      { id: 'history', title: 'Show history', group: 'Navigate', icon: <History />, action: () => revealSidebarPanel('history') },
+      { id: 'environments', title: 'Manage environments', group: 'Navigate', icon: <Globe />, keywords: 'variables', action: () => revealSidebarPanel('environment') },
+      { id: 'toggle-sidebar', title: isSidebarOpen ? 'Hide sidebar' : 'Show sidebar', group: 'View', icon: <PanelLeft />, shortcut: `${MOD_KEY} B`, action: () => setIsSidebarOpen((p) => !p) },
+      {
+        id: 'layout',
+        title: layout === 'horizontal' ? 'Layout: stack response below' : 'Layout: response beside request',
+        group: 'View',
+        icon: layout === 'horizontal' ? <LayoutVertical /> : <LayoutHorizontal />,
+        action: () => setLayout(layout === 'horizontal' ? 'vertical' : 'horizontal'),
+      },
+      { id: 'theme-light', title: 'Theme: Light', group: 'View', icon: <Sun />, action: () => setTheme('light') },
+      { id: 'theme-dark', title: 'Theme: Dark', group: 'View', icon: <Moon />, action: () => setTheme('dark') },
+      { id: 'theme-system', title: 'Theme: System', group: 'View', icon: <Monitor />, action: () => setTheme('system') },
+      { id: 'settings', title: 'Open settings', group: 'App', icon: <Settings />, action: () => setIsSettingsOpen(true) },
+    ];
+    workspace.collections.forEach((c) => {
+      collectRequests(c.children, [c.name]).forEach(({ item, path }) => {
+        items.push({
+          id: `req-${item.id}`,
+          title: item.name,
+          group: 'Requests',
+          icon: <FileText />,
+          keywords: `${path} ${item.request.method} ${item.request.url}`,
+          action: () => {
+            openTab(item, item.name);
+            setMode('single');
+          },
+        });
+      });
+    });
+    return items;
+  }, [
+    handleNewRequest,
+    handleCreateCollection,
+    setIsImportModalOpen,
+    setMode,
+    revealSidebarPanel,
+    isSidebarOpen,
+    setIsSidebarOpen,
+    layout,
+    setLayout,
+    setTheme,
+    setIsSettingsOpen,
+    workspace.collections,
+    openTab,
+  ]);
+
   const showWelcomeScreen = workspace.collections.length === 0 && tabs.length === 0;
 
   return (
-    <div className="flex flex-col h-screen font-sans antialiased text-foreground isolate">
+    <div className="flex h-full flex-col overflow-hidden bg-background text-foreground antialiased">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-[100] focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-foreground"
+      >
+        Skip to content
+      </a>
       <Header />
-      
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar
-            onLogClick={handleLogClick}
-            openRequestInTab={openTab}
-            selectedNodeId={selectedNodeId}
-            setSelectedNodeId={setSelectedNodeId}
+
+      <div className="relative flex min-h-0 flex-1">
+        <Sidebar onLogClick={handleLogClick} openRequestInTab={openTab} selectedNodeId={selectedNodeId} setSelectedNodeId={setSelectedNodeId} />
+
+        {/* Mobile drawer backdrop */}
+        <div
+          aria-hidden="true"
+          className={`fixed inset-0 z-30 bg-black/50 transition-opacity duration-200 md:hidden ${isSidebarOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+          onClick={() => setIsSidebarOpen(false)}
         />
 
-        <div className="flex-1 flex flex-col relative">
-          <div 
-            className={`
-              fixed inset-0 bg-background/80 z-30 md:hidden 
-              transition-opacity duration-300 ease-in-out
-              ${isSidebarOpen ? 'opacity-100 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}
-            `}
-            onClick={() => setIsSidebarOpen(false)} 
-          />
-          <main className="flex-1 flex flex-col p-4 md:p-6 gap-6 animate-fade-in">
-            <div className="flex-shrink-0 sticky top-0 z-10 bg-background/70 backdrop-blur-md border-b border-border">
-                <div className="flex items-center justify-between gap-3">
-                  <Tabs value={mode} onValueChange={(value) => setMode(value as any)} className="flex-1">
-                      <TabsList className="flex w-full gap-1 overflow-x-auto md:grid md:grid-cols-4">
-                          <TabsTrigger value="single">Single Request</TabsTrigger>
-                          <TabsTrigger value="bulk">Bulk Mode</TabsTrigger>
-                          <TabsTrigger value="flow">Flow</TabsTrigger>
-                          <TabsTrigger value="discovery">Discovery</TabsTrigger>
-                      </TabsList>
-                  </Tabs>
-                  {/* Layout toggle */}
-                  <div className="hidden md:flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Layout</span>
-                    <div className="inline-flex rounded-md border border-border p-0.5 bg-card">
-                      <button
-                        aria-label="Horizontal layout"
-                        className={`px-2 py-1 text-xs rounded ${layout === 'horizontal' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-background'}`}
-                        onClick={() => setLayout('horizontal')}
-                      >
-                        Horizontal
-                      </button>
-                      <button
-                        aria-label="Vertical layout"
-                        className={`px-2 py-1 text-xs rounded ${layout === 'vertical' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-background'}`}
-                        onClick={() => setLayout('vertical')}
-                      >
-                        Vertical
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                <div className="py-3">
-                  <HeaderKPIs />
-                </div>
-            </div>
-
-            <div className={`${mode === 'single' ? 'opacity-100' : ''}`} hidden={mode !== 'single'}>
-              {showWelcomeScreen ? (
-                <WelcomeScreen
-                  onCreateRequest={handleNewRequest}
-                  onCreateCollection={handleCreateCollection}
-                  onImport={() => setIsImportModalOpen(true)}
-                />
-              ) : (
-                <SingleRequestView 
-                  handleNewRequest={handleNewRequest}
-                  handleRequestUpdate={handleRequestUpdate}
-                  handleSingleSend={handleSingleSend}
-                  isLoading={isLoading}
-                  handleGenerateBulkData={handleGenerateBulkData}
-                  handleSaveRequest={handleSaveRequest}
-                  onGenerateTests={handleGenerateTests}
-                  isGeneratingTests={isGeneratingTests}
-                  composerActiveTab={composerActiveTab}
-                  setComposerActiveTab={setComposerActiveTab}
-                />
-              )}
-            </div>
-            <div className={`${mode === 'bulk' ? 'opacity-100' : ''}`} hidden={mode !== 'bulk'}>
-              <BulkWorkspace
-                request={bulkRequest}
-                onRequestChange={setBulkRequest}
-                isBodyInvalid={false} // Managed within bulk mode context
-                onBodyValidationChange={setIsBodyInvalid}
-                data={bulkData}
-                onDataChange={setBulkData}
-                results={bulkResults}
-                runState={bulkRunState}
-                onRun={handleBulkRun}
-                onPause={handleBulkPause}
-                onResume={handleBulkResume}
-                onStop={handleBulkStop}
-                onTestSend={handleTestSend}
-                settings={bulkSettings}
-                onSettingsChange={setBulkSettings}
-                onGenerateBulkData={handleGenerateBulkData}
-                globals={allVariables}
+        {/*
+          Layout contract for workspaces: each mode renders into a box that exactly
+          fills the remaining viewport. Workspace roots must be h-full and own their
+          own scrolling. Modes stay mounted so in-progress state survives switching.
+        */}
+        <main id="main" className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+          <section aria-label="Request" hidden={mode !== 'single'} className="absolute inset-0">
+            {showWelcomeScreen ? (
+              <WelcomeScreen
+                onCreateRequest={handleNewRequest}
+                onCreateCollection={handleCreateCollection}
+                onImport={() => setIsImportModalOpen(true)}
               />
-            </div>
-            <div className={`${mode === 'flow' ? 'opacity-100' : ''}`} hidden={mode !== 'flow'}>
-              <FlowWorkspace />
-            </div>
-            <div className={`${mode === 'discovery' ? 'opacity-100' : ''}`} hidden={mode !== 'discovery'}>
-              <DiscoveryWorkspace />
-            </div>
-          </main>
-        </div>
+            ) : (
+              <SingleRequestView
+                handleNewRequest={handleNewRequest}
+                handleRequestUpdate={handleRequestUpdate}
+                handleSingleSend={handleSingleSend}
+                handleCancelRequest={handleCancelRequest}
+                isLoading={isLoading}
+                handleGenerateBulkData={handleGenerateBulkData}
+                handleSaveRequest={handleSaveRequest}
+                onGenerateTests={handleGenerateTests}
+                isGeneratingTests={isGeneratingTests}
+                composerActiveTab={composerActiveTab}
+                setComposerActiveTab={setComposerActiveTab}
+              />
+            )}
+          </section>
+          <section aria-label="Bulk" hidden={mode !== 'bulk'} className="absolute inset-0">
+            <BulkWorkspace
+              request={bulkRequest}
+              onRequestChange={setBulkRequest}
+              data={bulkData}
+              onDataChange={setBulkData}
+              results={bulkResults}
+              runState={bulkRunState}
+              onRun={bulkRunner.start}
+              onPause={bulkRunner.pause}
+              onResume={bulkRunner.resume}
+              onStop={bulkRunner.stop}
+              onTestSend={handleTestSend}
+              isTestSending={isTestSending}
+              settings={bulkSettings}
+              onSettingsChange={setBulkSettings}
+              onGenerateBulkData={handleGenerateBulkData}
+              globals={allVariables}
+            />
+          </section>
+          <section aria-label="Flow" hidden={mode !== 'flow'} className="absolute inset-0">
+            <FlowWorkspace />
+          </section>
+          <section aria-label="Discovery" hidden={mode !== 'discovery'} className="absolute inset-0">
+            <DiscoveryWorkspace />
+          </section>
+        </main>
       </div>
-      
+
       {saveRequestState.isOpen && (
-        <SaveRequestModal
-          onClose={() => setSaveRequestState({ isOpen: false, tabId: null })}
-          onSave={handleSaveAsRequest}
-        />
+        <SaveRequestModal onClose={() => setSaveRequestState({ isOpen: false, tabId: null })} onSave={handleSaveAsRequest} />
       )}
-      
       {isImportModalOpen && (
-          <ImportModal 
-              onImport={handleImportCollection}
-          />
+        <Suspense fallback={null}>
+          <ImportModal onImport={handleImportCollection} />
+        </Suspense>
       )}
-
       <OnboardingModal />
-
-      <SettingsModal 
-        show={isSettingsOpen} 
-        onClose={() => setIsSettingsOpen(false)} 
-        onClearCache={handleClearCache}
-      />
+      <SettingsModal show={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} onClearCache={handleClearCache} />
+      <CommandPalette open={isCommandPaletteOpen} onClose={() => setIsCommandPaletteOpen(false)} items={paletteItems} />
       <ToastContainer />
     </div>
   );

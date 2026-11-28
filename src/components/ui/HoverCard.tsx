@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 
 interface HoverCardContextType {
   isOpen: boolean;
-  triggerRef: React.RefObject<HTMLSpanElement> | null;
+  triggerRef: React.RefObject<HTMLSpanElement | null>;
   handleMouseEnter: () => void;
   handleMouseLeave: () => void;
 }
@@ -25,7 +25,7 @@ export const HoverCard: React.FC<{ children: React.ReactNode }> = ({ children })
   const handleMouseLeave = () => {
     timeoutId.current = setTimeout(() => {
       setIsOpen(false);
-    }, 100);
+    }, 120);
   };
   
   return (
@@ -44,6 +44,8 @@ export const HoverCardTrigger: React.FC<{ children: React.ReactNode, asChild?: b
         ref={context.triggerRef}
         onMouseEnter={context.handleMouseEnter}
         onMouseLeave={context.handleMouseLeave}
+        onFocus={context.handleMouseEnter}
+        onBlur={context.handleMouseLeave}
         className="inline-flex"
       >
         {children}
@@ -80,6 +82,7 @@ export const HoverCardContent: React.FC<{ children: React.ReactNode, className?:
   return createPortal(
     <div
       ref={contentRef}
+      role="tooltip"
       onMouseEnter={context.handleMouseEnter}
       onMouseLeave={context.handleMouseLeave}
       style={{ top: `${position.top}px`, left: `${position.left}px` }}
@@ -87,7 +90,7 @@ export const HoverCardContent: React.FC<{ children: React.ReactNode, className?:
         fixed w-max min-w-[250px]
         bg-popover border border-border text-popover-foreground text-xs rounded-md 
         shadow-popover z-50
-        ${isOpen ? 'animate-slide-up-and-fade' : 'opacity-0 pointer-events-none'}
+        ${isOpen ? 'animate-fade-in' : 'opacity-0 pointer-events-none'}
         ${className}
       `}
     >

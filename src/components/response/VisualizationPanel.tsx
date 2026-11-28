@@ -1,127 +1,246 @@
-import React, { useMemo, useState } from 'react';
-import { Bar, Line, Pie } from 'react-chartjs-2';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Bar, Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
   CategoryScale,
   LinearScale,
   BarElement,
-  Title,
   Tooltip,
-  Legend,
   PointElement,
   LineElement,
-  ArcElement,
+  Filler,
 } from 'chart.js';
 import { EmptyState } from '../ui/EmptyState';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/Select';
+import { SegmentedControl } from '../ui/SegmentedControl';
 import { ChartBar } from '../icons';
 
-ChartJS.register(
-  CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, PointElement, LineElement, ArcElement
-);
+ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, PointElement, LineElement, Filler);
 
 interface VisualizationPanelProps {
   data: any;
 }
 
-const findSuitableData = (data: any): { path: string, array: any[] } | null => {
-    if (Array.isArray(data) && data.length > 0 && typeof data[0] === 'object') {
-        return { path: 'root', array: data };
-    }
-    if (typeof data === 'object' && data !== null) {
-        for (const key in data) {
-            const value = data[key];
-            if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object') {
-                return { path: key, array: value };
-            }
-        }
-    }
-    return null;
+interface Candidate {
+  path: string;
+  array: Record<string, any>[];
+  labelKeys: string[];
+  valueKeys: string[];
 }
 
-export const VisualizationPanel: React.FC<VisualizationPanelProps> = ({ data }) => {
-    const suitableData = useMemo(() => findSuitableData(data), [data]);
+const MAX_POINTS = 200;
 
-    const [chartType, setChartType] = useState<'bar' | 'line' | 'pie'>('bar');
-    const [labelKey, setLabelKey] = useState<string>('');
-    const [dataKey, setDataKey] = useState<string>('');
+const analyze = (path: string, array: any[]): Candidate | null => {
+  const rows = array.filter((r) => typeof r === 'object' && r !== null && !Array.isArray(r));
+  if (rows.length < 1 || rows.length < array.length * 0.8) return null;
+  const sample = rows.slice(0, 200);
+  const keys = Array.from(new Set(sample.flatMap((r) => Object.keys(r))));
+  const valueKeys = keys.filter((k) => sample.some((r) => typeof r[k] === 'number') && sample.every((r) => r[k] == null || typeof r[k] === 'number'));
+  const labelKeys = keys.filter((k) => sample.every((r) => r[k] == null || typeof r[k] === 'string' || typeof r[k] === 'number'));
+  if (valueKeys.length === 0) return null;
+  return { path, array: rows, labelKeys, valueKeys };
+};
 
-    const keys = useMemo(() => {
-        if (!suitableData) return { stringKeys: [], numberKeys: [] };
-        const firstItem = suitableData.array[0];
-        const stringKeys: string[] = [];
-        const numberKeys: string[] = [];
-        Object.keys(firstItem).forEach(key => {
-            if (typeof firstItem[key] === 'string') stringKeys.push(key);
-            if (typeof firstItem[key] === 'number') numberKeys.push(key);
-        });
-        
-        if (!labelKey) setLabelKey(stringKeys[0] || '');
-        if (!dataKey) setDataKey(numberKeys[0] || '');
-
-        return { stringKeys, numberKeys };
-    }, [suitableData, labelKey, dataKey]);
-
-    const chartData = useMemo(() => {
-        if (!suitableData || !labelKey || !dataKey) return null;
-        
-        const labels = suitableData.array.map(item => item[labelKey]);
-        const values = suitableData.array.map(item => item[dataKey]);
-
-        return {
-            labels,
-            datasets: [{
-                label: `${dataKey} by ${labelKey}`,
-                data: values,
-                backgroundColor: 'rgba(59, 130, 246, 0.5)',
-                borderColor: 'rgba(59, 130, 246, 1)',
-                borderWidth: 1,
-            }]
-        };
-    }, [suitableData, labelKey, dataKey]);
-
-    if (!suitableData) {
-        return <EmptyState icon={<ChartBar className="h-12 w-12 stroke-1 text-muted-foreground" />} message="No visualizable data found. Visualization works best with an array of objects." />;
+/** Arrays of objects with at least one numeric field, at the root or one level down. */
+export const findVisualizableData = (data: any): Candidate[] => {
+  const out: Candidate[] = [];
+  if (Array.isArray(data)) {
+    const c = analyze('root', data);
+    if (c) out.push(c);
+  } else if (typeof data === 'object' && data !== null) {
+    for (const key of Object.keys(data)) {
+      if (Array.isArray(data[key])) {
+        const c = analyze(key, data[key]);
+        if (c) out.push(c);
+      }
     }
+  }
+  return out;
+};
 
+const readVar = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/** Re-read theme colors whenever the <html> class (light/dark) changes. */
+const useThemeColors = () => {
+  const read = () => ({
+    primary: `hsl(${readVar('--primary')})`,
+    primaryHover: `hsl(${readVar('--primary')} / 0.8)`,
+    primaryFill: `hsl(${readVar('--primary')} / 0.12)`,
+    text: `hsl(${readVar('--muted-foreground')})`,
+    grid: `hsl(${readVar('--border')})`,
+    surface: `hsl(${readVar('--card')})`,
+    popover: `hsl(${readVar('--popover')})`,
+    popoverText: `hsl(${readVar('--popover-foreground')})`,
+  });
+  const [colors, setColors] = useState(read);
+  useEffect(() => {
+    const obs = new MutationObserver(() => setColors(read()));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+    return () => obs.disconnect();
+  }, []);
+  return colors;
+};
+
+const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <label className="flex min-w-[9rem] flex-1 flex-col gap-1 sm:max-w-[14rem]">
+    <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+    {children}
+  </label>
+);
+
+export const VisualizationPanel: React.FC<VisualizationPanelProps> = ({ data }) => {
+  const candidates = useMemo(() => findVisualizableData(data), [data]);
+  const [path, setPath] = useState('');
+  const [chartType, setChartType] = useState<'bar' | 'line'>('bar');
+  const [labelKey, setLabelKey] = useState('');
+  const [valueKey, setValueKey] = useState('');
+  const colors = useThemeColors();
+
+  const current = candidates.find((c) => c.path === path) ?? candidates[0];
+
+  // Pick sensible defaults whenever the data set changes.
+  useEffect(() => {
+    if (!current) return;
+    if (!current.labelKeys.includes(labelKey)) {
+      const preferred = current.labelKeys.find((k) => /name|title|label|date|time|key/i.test(k)) ?? current.labelKeys.find((k) => k !== current.valueKeys[0]) ?? '';
+      setLabelKey(preferred);
+    }
+    if (!current.valueKeys.includes(valueKey)) setValueKey(current.valueKeys.find((k) => !/^id$/i.test(k)) ?? current.valueKeys[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
+
+  if (!current) {
     return (
-        <div className="p-4 space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-2 border border-border rounded-lg bg-muted">
-                <div>
-                    <label className="text-xs font-semibold text-muted-foreground">Chart Type</label>
-                    <Select value={chartType} onValueChange={(v) => setChartType(v as any)}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="bar">Bar Chart</SelectItem>
-                            <SelectItem value="line">Line Chart</SelectItem>
-                            <SelectItem value="pie">Pie Chart</SelectItem>
-                        </SelectContent>
-                    </Select>
-                </div>
-                 <div>
-                    <label className="text-xs font-semibold text-muted-foreground">Label (X-Axis)</label>
-                    <Select value={labelKey} onValueChange={setLabelKey}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                            {keys.stringKeys.map(k => <SelectItem key={k} value={k}>{k}</SelectItem>)}
-                        </SelectContent>
-                    </Select>
-                </div>
-                 <div>
-                    <label className="text-xs font-semibold text-muted-foreground">Data (Y-Axis)</label>
-                    <Select value={dataKey} onValueChange={setDataKey}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                            {keys.numberKeys.map(k => <SelectItem key={k} value={k}>{k}</SelectItem>)}
-                        </SelectContent>
-                    </Select>
-                </div>
-            </div>
-            <div className="h-96">
-                {chartData && chartType === 'bar' && <Bar data={chartData} options={{ maintainAspectRatio: false }} />}
-                {chartData && chartType === 'line' && <Line data={chartData} options={{ maintainAspectRatio: false }} />}
-                {chartData && chartType === 'pie' && <Pie data={chartData} options={{ maintainAspectRatio: false }} />}
-            </div>
-        </div>
+      <EmptyState
+        icon={<ChartBar />}
+        title="Nothing to chart"
+        message="Visualize works with an array of objects that has at least one numeric field, at the root or one level down."
+      />
     );
+  }
+
+  const rows = current.array.slice(0, MAX_POINTS);
+  const labels = rows.map((r, i) => (labelKey ? String(r[labelKey] ?? `#${i}`) : `#${i}`));
+  const values = rows.map((r) => (typeof r[valueKey] === 'number' ? r[valueKey] : null));
+
+  const chartData = {
+    labels,
+    datasets: [
+      {
+        label: valueKey,
+        data: values,
+        backgroundColor: chartType === 'bar' ? colors.primary : colors.primaryFill,
+        hoverBackgroundColor: colors.primaryHover,
+        borderColor: colors.primary,
+        borderWidth: chartType === 'line' ? 2 : 0,
+        borderRadius: 4,
+        maxBarThickness: 28,
+        pointRadius: rows.length > 40 ? 0 : 3,
+        pointHoverRadius: 5,
+        pointBackgroundColor: colors.primary,
+        pointBorderColor: colors.surface,
+        pointBorderWidth: 2,
+        fill: chartType === 'line',
+        tension: 0.25,
+        spanGaps: true,
+      },
+    ],
+  };
+
+  const options: any = {
+    maintainAspectRatio: false,
+    animation: { duration: 200 },
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: colors.popover,
+        titleColor: colors.popoverText,
+        bodyColor: colors.popoverText,
+        borderColor: colors.grid,
+        borderWidth: 1,
+        padding: 8,
+        displayColors: false,
+        callbacks: { label: (ctx: any) => `${valueKey}: ${ctx.raw ?? 'null'}` },
+      },
+    },
+    scales: {
+      x: { grid: { display: false }, border: { color: colors.grid }, ticks: { color: colors.text, maxRotation: 0, autoSkipPadding: 12, font: { size: 11 } } },
+      y: { beginAtZero: true, grid: { color: colors.grid }, border: { display: false }, ticks: { color: colors.text, font: { size: 11 } } },
+    },
+  };
+
+  const nullCount = values.filter((v) => v === null).length;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-auto p-3 sm:p-4">
+      <div className="flex flex-wrap items-end gap-3">
+        {candidates.length > 1 && (
+          <Field label="Data">
+            <Select value={current.path} onValueChange={setPath}>
+              <SelectTrigger aria-label="Data set">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {candidates.map((c) => (
+                  <SelectItem key={c.path} value={c.path}>
+                    {c.path === 'root' ? 'root' : c.path} ({c.array.length})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        )}
+        <Field label="Label">
+          <Select value={labelKey} onValueChange={setLabelKey}>
+            <SelectTrigger aria-label="Label field">
+              <SelectValue placeholder="Index" />
+            </SelectTrigger>
+            <SelectContent>
+              {current.labelKeys.map((k) => (
+                <SelectItem key={k} value={k}>
+                  {k}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Value">
+          <Select value={valueKey} onValueChange={setValueKey}>
+            <SelectTrigger aria-label="Value field">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {current.valueKeys.map((k) => (
+                <SelectItem key={k} value={k}>
+                  {k}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <SegmentedControl
+          aria-label="Chart type"
+          value={chartType}
+          onChange={(v) => setChartType(v as 'bar' | 'line')}
+          options={[
+            { value: 'bar', label: 'Bar' },
+            { value: 'line', label: 'Line' },
+          ]}
+        />
+      </div>
+      <div className="mt-4 flex items-baseline justify-between gap-2">
+        <h3 className="text-[13px] font-medium text-foreground">
+          {valueKey} <span className="text-muted-foreground">by {labelKey || 'index'}</span>
+        </h3>
+        <span className="text-[11px] tabular-nums text-muted-foreground">
+          {current.array.length > MAX_POINTS ? `First ${MAX_POINTS} of ${current.array.length}` : `${rows.length} points`}
+          {nullCount > 0 ? ` · ${nullCount} empty` : ''}
+        </span>
+      </div>
+      <div className="relative mt-2 min-h-[240px] flex-1">
+        {chartType === 'bar' ? <Bar data={chartData} options={options} /> : <Line data={chartData} options={options} />}
+      </div>
+    </div>
+  );
 };

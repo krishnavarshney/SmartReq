@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App from './src/App';
 import { ToastProvider } from './src/context/ToastContext';
 import './src/styles/index.css';
+import 'react-diff-view/style/index.css';
 import {
   Chart as ChartJS,
   CategoryScale,

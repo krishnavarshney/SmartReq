@@ -1,113 +1,177 @@
-import React, { useState, useMemo } from 'react';
-import { Input } from './Input';
-import { Search } from '../icons';
-import { EmptyState } from './EmptyState';
+import React, { useMemo, useState } from 'react';
+import { ArrowDown, ArrowUp, ChevronsUpDown } from 'lucide-react';
+import { useVirtualRows } from '../bulk/useVirtualRows';
 
-interface DataTableProps<T extends Record<string, any>> {
-    columns: { accessorKey: string; header: string }[];
-    data: T[];
-    onRowClick?: (row: { original: T }) => void;
-    cellRenderers?: Record<string, (info: any) => React.ReactNode>;
+export interface DataTableColumn<T> {
+  key: string;
+  header: React.ReactNode;
+  /** Plain-text header for aria labels when `header` is not a string. */
+  label?: string;
+  cell: (row: T) => React.ReactNode;
+  /** Value used for sorting; omit to make the column unsortable. */
+  sortValue?: (row: T) => string | number;
+  /** Fixed column width in px (the table scrolls horizontally when columns overflow). */
+  width: number;
+  align?: 'left' | 'right' | 'center';
+  /** Extra classes for body cells. */
+  className?: string;
 }
 
-export function DataTable<T extends Record<string, any>>({
-    columns,
-    data,
-    onRowClick,
-    cellRenderers = {}
+export interface DataTableSort {
+  key: string;
+  direction: 'asc' | 'desc';
+}
+
+interface DataTableProps<T> {
+  columns: DataTableColumn<T>[];
+  rows: T[];
+  getRowKey: (row: T) => string | number;
+  onRowClick?: (row: T) => void;
+  /** Accessible name for each row (announced when focused). */
+  getRowLabel?: (row: T) => string;
+  /** Highlight a row (e.g. the one open in a detail view). */
+  activeRowKey?: string | number | null;
+  /** Rendered in the body when `rows` is empty. */
+  empty?: React.ReactNode;
+  rowHeight?: number;
+  initialSort?: DataTableSort | null;
+  ariaLabel?: string;
+}
+
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+const compare = (a: string | number, b: string | number) => {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return collator.compare(String(a), String(b));
+};
+
+/**
+ * Sortable, virtualized table with sticky header. Columns have fixed widths so
+ * windowed rows never shift layout. Rows are focusable and open with Enter/Space.
+ */
+export function DataTable<T>({
+  columns,
+  rows,
+  getRowKey,
+  onRowClick,
+  getRowLabel,
+  activeRowKey,
+  empty,
+  rowHeight = 32,
+  initialSort = null,
+  ariaLabel,
 }: DataTableProps<T>) {
-    const [filter, setFilter] = useState('');
-    const [sort, setSort] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
+  const [sort, setSort] = useState<DataTableSort | null>(initialSort);
 
-    const filteredAndSortedData = useMemo(() => {
-        let filtered = data;
-        if (filter) {
-            filtered = data.filter(row =>
-                Object.values(row).some(value =>
-                    String(value).toLowerCase().includes(filter.toLowerCase())
-                )
+  const sorted = useMemo(() => {
+    const col = sort && columns.find((c) => c.key === sort.key);
+    if (!sort || !col?.sortValue) return rows;
+    const dir = sort.direction === 'asc' ? 1 : -1;
+    // Copy before sorting: never mutate the caller's array.
+    return rows
+      .map((row, i) => ({ row, i, v: col.sortValue!(row) }))
+      .sort((a, b) => compare(a.v, b.v) * dir || a.i - b.i)
+      .map((x) => x.row);
+  }, [rows, sort, columns]);
+
+  const { containerRef, start, end, padTop, padBottom } = useVirtualRows(sorted.length, rowHeight);
+  const totalWidth = columns.reduce((sum, c) => sum + c.width, 0);
+
+  const toggleSort = (key: string) =>
+    setSort((prev) => (prev?.key !== key ? { key, direction: 'asc' } : prev.direction === 'asc' ? { key, direction: 'desc' } : null));
+
+  const alignClass = (align?: 'left' | 'right' | 'center') => (align === 'right' ? 'text-right justify-end' : align === 'center' ? 'text-center justify-center' : 'text-left');
+  // Right-aligned headers put the sort icon first so the label lines up with the values.
+  const headerFlow = (align?: 'left' | 'right' | 'center') => (align === 'right' ? 'flex-row-reverse justify-start' : alignClass(align));
+
+  return (
+    <div ref={containerRef} className="relative h-full min-h-0 overflow-auto">
+      <table className="w-full table-fixed border-separate border-spacing-0 text-[13px]" style={{ minWidth: totalWidth }} aria-label={ariaLabel} aria-rowcount={sorted.length + 1}>
+        <colgroup>
+          {columns.map((c, i) => (
+            // Last column absorbs extra width.
+            <col key={c.key} style={i === columns.length - 1 ? undefined : { width: c.width }} />
+          ))}
+        </colgroup>
+        <thead className="sticky top-0 z-10">
+          <tr>
+            {columns.map((col) => {
+              const active = sort?.key === col.key;
+              const ariaSort = active ? (sort!.direction === 'asc' ? 'ascending' : 'descending') : col.sortValue ? 'none' : undefined;
+              return (
+                <th
+                  key={col.key}
+                  scope="col"
+                  aria-sort={ariaSort}
+                  className={`h-8 border-b border-border bg-card px-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground ${alignClass(col.align)}`}
+                >
+                  {col.sortValue ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleSort(col.key)}
+                      className={`group flex h-8 w-full items-center gap-1 px-3 uppercase tracking-wide hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${headerFlow(col.align)} ${active ? 'text-foreground' : ''}`}
+                      title={`Sort by ${col.label ?? (typeof col.header === 'string' ? col.header : col.key)}`}
+                    >
+                      <span className="truncate">{col.header}</span>
+                      {active ? (
+                        sort!.direction === 'asc' ? <ArrowUp className="h-3 w-3 flex-shrink-0" /> : <ArrowDown className="h-3 w-3 flex-shrink-0" />
+                      ) : (
+                        <ChevronsUpDown className="h-3 w-3 flex-shrink-0 opacity-0 group-hover:opacity-60" />
+                      )}
+                    </button>
+                  ) : (
+                    <span className={`flex h-8 items-center px-3 ${alignClass(col.align)}`}>{col.header}</span>
+                  )}
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {padTop > 0 && (
+            <tr aria-hidden="true" style={{ height: padTop }}>
+              <td colSpan={columns.length} />
+            </tr>
+          )}
+          {sorted.slice(start, end).map((row, i) => {
+            const key = getRowKey(row);
+            const active = activeRowKey !== undefined && activeRowKey !== null && key === activeRowKey;
+            return (
+              <tr
+                key={key}
+                aria-rowindex={start + i + 2}
+                aria-label={getRowLabel?.(row)}
+                tabIndex={onRowClick ? 0 : undefined}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+                onKeyDown={
+                  onRowClick
+                    ? (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          onRowClick(row);
+                        }
+                      }
+                    : undefined
+                }
+                style={{ height: rowHeight }}
+                className={`group outline-none ${onRowClick ? 'cursor-pointer' : ''} ${active ? 'bg-primary/10' : 'hover:bg-accent/60'} focus-visible:bg-accent focus-visible:shadow-[inset_2px_0_0_hsl(var(--primary))]`}
+              >
+                {columns.map((col) => (
+                  <td key={col.key} className={`truncate border-b border-border/60 px-3 align-middle ${alignClass(col.align)} ${col.className ?? ''}`}>
+                    {col.cell(row)}
+                  </td>
+                ))}
+              </tr>
             );
-        }
-
-        if (sort) {
-            filtered.sort((a, b) => {
-                const aValue = a[sort.key];
-                const bValue = b[sort.key];
-                if (aValue < bValue) return sort.direction === 'asc' ? -1 : 1;
-                if (aValue > bValue) return sort.direction === 'asc' ? 1 : -1;
-                return 0;
-            });
-        }
-        return filtered;
-    }, [data, filter, sort]);
-
-    const handleSort = (key: string) => {
-        if (sort?.key === key) {
-            setSort({ key, direction: sort.direction === 'asc' ? 'desc' : 'asc' });
-        } else {
-            setSort({ key, direction: 'asc' });
-        }
-    };
-
-    const getNestedValue = (obj: any, path: string) => {
-        return path.split('.').reduce((acc, part) => acc && acc[part], obj);
-    }
-
-    return (
-        <div className="h-full flex flex-col">
-            <div className="p-2 flex-shrink-0">
-                <div className="relative w-full max-w-sm">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                        placeholder="Filter results..."
-                        value={filter}
-                        onChange={(e) => setFilter(e.target.value)}
-                        className="w-full !pl-9 !h-8 bg-background"
-                    />
-                </div>
-            </div>
-            <div className="flex-grow overflow-auto">
-                <table className="w-full text-sm text-left">
-                    <thead className="text-xs text-muted-foreground uppercase bg-muted sticky top-0 z-10">
-                        <tr>
-                            {columns.map(col => (
-                                <th key={col.accessorKey} className="px-4 py-2 font-semibold cursor-pointer" onClick={() => handleSort(col.accessorKey)}>
-                                    <div className="flex items-center gap-2">
-                                        {col.header}
-                                        {sort?.key === col.accessorKey && (
-                                            <span>{sort.direction === 'asc' ? '▲' : '▼'}</span>
-                                        )}
-                                    </div>
-                                </th>
-                            ))}
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                        {filteredAndSortedData.map((row, rowIndex) => (
-                            <tr
-                                key={row.id ?? rowIndex}
-                                onClick={() => onRowClick?.({ original: row })}
-                                className="hover:bg-muted cursor-pointer"
-                            >
-                                {columns.map(col => {
-                                    const cellValue = getNestedValue(row, col.accessorKey);
-                                    const CellRenderer = cellRenderers[col.accessorKey];
-                                    return (
-                                        <td key={col.accessorKey} className="px-4 py-2 font-mono">
-                                            {CellRenderer ? CellRenderer({ getValue: () => cellValue, row: { original: row } }) : String(cellValue ?? '')}
-                                        </td>
-                                    )
-                                })}
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-                 {filteredAndSortedData.length === 0 && (
-                    <div className="mt-8">
-                        <EmptyState message={data.length > 0 ? "No results match your filter." : "No results to display."} />
-                    </div>
-                 )}
-            </div>
-        </div>
-    );
+          })}
+          {padBottom > 0 && (
+            <tr aria-hidden="true" style={{ height: padBottom }}>
+              <td colSpan={columns.length} />
+            </tr>
+          )}
+        </tbody>
+      </table>
+      {sorted.length === 0 && empty && <div className="sticky left-0 w-full">{empty}</div>}
+    </div>
+  );
 }

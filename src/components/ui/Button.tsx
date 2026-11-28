@@ -1,53 +1,67 @@
 import React from 'react';
 import { Spinner } from './Spinner';
 
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'destructive' | 'outline' | 'subtle';
+export type ButtonSize = 'xs' | 'sm' | 'md' | 'lg';
+
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   isLoading?: boolean;
-  variant?: 'primary' | 'secondary' | 'ghost' | 'destructive';
-  size?: 'sm' | 'md' | 'lg';
+  variant?: ButtonVariant;
+  size?: ButtonSize;
 }
 
+const BASE =
+  'relative inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md font-medium select-none ' +
+  'transition-[background-color,border-color,color,box-shadow,opacity] duration-150 motion-base focus-ring ' +
+  'disabled:opacity-50 disabled:pointer-events-none active:translate-y-px [&_svg]:shrink-0';
+
+const VARIANTS: Record<ButtonVariant, string> = {
+  primary:
+    'bg-primary text-primary-foreground shadow-[inset_0_1px_0_0_rgb(255_255_255/0.12),0_1px_2px_0_rgb(0_0_0/0.2)] hover:bg-primary/90',
+  secondary: 'bg-secondary text-secondary-foreground border border-border hover:bg-accent hover:border-input',
+  outline: 'bg-transparent text-foreground border border-input hover:bg-accent',
+  ghost: 'bg-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+  subtle: 'bg-primary/10 text-primary hover:bg-primary/15',
+  destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
+};
+
+const SIZES: Record<ButtonSize, string> = {
+  xs: 'h-6 px-2 text-xs [&_svg]:h-3.5 [&_svg]:w-3.5',
+  sm: 'h-7 px-2.5 text-xs',
+  md: 'h-8 px-3 text-sm',
+  lg: 'h-10 px-4 text-sm',
+};
+
+const ICON_SIZES: Record<ButtonSize, string> = {
+  xs: 'h-6 w-6',
+  sm: 'h-7 w-7',
+  md: 'h-8 w-8',
+  lg: 'h-10 w-10',
+};
+
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ children, isLoading = false, variant = 'primary', size = 'md', className = '', ...props }, ref) => {
-    const baseStyles = 'relative inline-flex items-center justify-center rounded-md font-semibold focus-ring transition-all motion-base disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]';
-
-    const variantStyles = {
-      primary: 'bg-gradient-to-r from-[hsl(var(--primary))] to-violet-600 text-primary-foreground elev-1 hover:elev-2 hover:shadow-primary/25 hover:-translate-y-[1px]',
-      secondary: 'bg-secondary text-secondary-foreground elev-0 hover:bg-accent hover:elev-1 hover:-translate-y-[1px]',
-      ghost: 'bg-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-      destructive: 'bg-destructive text-destructive-foreground elev-0 hover:bg-destructive/90 hover:elev-1 hover:-translate-y-[1px]',
-    };
-
-    const sizeStyles = {
-      sm: 'px-3 h-8 text-xs',
-      md: 'px-4 h-9 text-sm',
-      lg: 'px-6 h-11 text-base',
-    };
-
-    return (
-      <button
-        ref={ref}
-        className={`${baseStyles} ${variantStyles[variant]} ${sizeStyles[size]} ${className}`}
-        disabled={isLoading || props.disabled}
-        {...props}
-      >
-        {isLoading && <Spinner className="mr-2 h-4 w-4" />}
-        {children}
-      </button>
-    );
-  }
+  ({ children, isLoading = false, variant = 'primary', size = 'md', className = '', type = 'button', disabled, ...props }, ref) => (
+    <button
+      ref={ref}
+      type={type}
+      className={`${BASE} ${VARIANTS[variant]} ${SIZES[size]} ${className}`}
+      disabled={isLoading || disabled}
+      aria-busy={isLoading || undefined}
+      {...props}
+    >
+      {isLoading && <Spinner className="h-3.5 w-3.5" />}
+      {children}
+    </button>
+  )
 );
+Button.displayName = 'Button';
 
+/** Square icon-only button. Always pass an `aria-label`. */
 export const IconButton = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ children, className = '', ...props }, ref) => {
-    return (
-      <Button
-        ref={ref}
-        className={`!px-0 w-9 h-9 ${className}`}
-        {...props}
-      >
-        {children}
-      </Button>
-    );
-  }
+  ({ children, className = '', variant = 'ghost', size = 'md', isLoading, ...props }, ref) => (
+    <Button ref={ref} variant={variant} size={size} isLoading={isLoading} className={`!px-0 ${ICON_SIZES[size]} ${className}`} {...props}>
+      {isLoading ? null : children}
+    </Button>
+  )
 );
+IconButton.displayName = 'IconButton';

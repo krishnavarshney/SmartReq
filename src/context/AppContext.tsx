@@ -1,13 +1,21 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { usePersistentState } from '../hooks/usePersistentState';
 
-type Layout = 'vertical' | 'horizontal';
+export type Layout = 'vertical' | 'horizontal';
+export type AppMode = 'single' | 'bulk' | 'flow' | 'discovery';
+export type SidebarPanel = 'collections' | 'environment' | 'history';
 
 interface AppContextType {
+  mode: AppMode;
+  setMode: (mode: AppMode) => void;
   isSettingsOpen: boolean;
   setIsSettingsOpen: (isOpen: boolean) => void;
   isSidebarOpen: boolean;
   setIsSidebarOpen: (isOpen: boolean | ((prev: boolean) => boolean)) => void;
+  sidebarPanel: SidebarPanel;
+  setSidebarPanel: (panel: SidebarPanel) => void;
+  /** Open the sidebar on a given panel (used by header/env selector/palette). */
+  revealSidebarPanel: (panel: SidebarPanel) => void;
   sidebarWidth: number;
   setSidebarWidth: (width: number) => void;
   layout: Layout;
@@ -18,87 +26,96 @@ interface AppContextType {
   setIsOnboardingOpen: (isOpen: boolean) => void;
   hasOnboarded: boolean;
   setHasOnboarded: (hasOnboarded: boolean) => void;
+  isCommandPaletteOpen: boolean;
+  setIsCommandPaletteOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
+  isMobile: boolean;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const DESKTOP_BREAKPOINT = 768; // Corresponds to Tailwind's 'md'
+export const DESKTOP_BREAKPOINT = 768; // Tailwind 'md'
+const SIDEBAR_KEY = 'sidebarOpen_desktop_v1';
+
+const readDesktopSidebar = (): boolean => {
+  try {
+    const stored = window.localStorage.getItem(SIDEBAR_KEY);
+    return stored !== null ? JSON.parse(stored) : true;
+  } catch {
+    return true;
+  }
+};
 
 export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < DESKTOP_BREAKPOINT);
+  const [mode, setMode] = usePersistentState<AppMode>('appMode_v1', 'single');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  
-  const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
-    if (typeof window !== 'undefined' && window.innerWidth >= DESKTOP_BREAKPOINT) {
-      try {
-        const storedValue = window.localStorage.getItem('sidebarOpen_desktop_v1');
-        return storedValue !== null ? JSON.parse(storedValue) : true;
-      } catch {
-        return true;
-      }
-    }
-    return false; // Default to closed on mobile
-  });
-
-  const [sidebarWidth, setSidebarWidth] = usePersistentState('sidebarWidth_v1', 320);
-  const [layout, setLayoutState] = usePersistentState<Layout>('layout_v1', 'horizontal');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => (isMobile ? false : readDesktopSidebar()));
+  const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>('collections');
+  const [sidebarWidth, setSidebarWidth] = usePersistentState('sidebarWidth_v2', 300);
+  const [layout, setLayout] = usePersistentState<Layout>('layout_v1', 'horizontal');
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [hasOnboarded, setHasOnboarded] = usePersistentState('hasOnboarded_v1', false);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
-  
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const wasMobile = useRef(isMobile);
+
+  // React only to crossing the breakpoint, so resizing a desktop window never
+  // fights the user's sidebar choice or layout preference.
   useEffect(() => {
-    const handleResize = () => {
-      const newLayout: Layout = window.innerWidth < DESKTOP_BREAKPOINT ? 'vertical' : 'horizontal';
-      setLayoutState(newLayout); // Update the layout state
-      if (window.innerWidth < DESKTOP_BREAKPOINT) {
-        setIsSidebarOpen(false);
-      } else {
-        // On desktop, restore sidebar state from local storage if it was open
-        try {
-          const storedValue = window.localStorage.getItem('sidebarOpen_desktop_v1');
-          if (storedValue !== null) {
-            setIsSidebarOpen(JSON.parse(storedValue));
-          } else {
-            setIsSidebarOpen(true); // Default to open if no stored value
-          }
-        } catch {
-          setIsSidebarOpen(true);
-        }
+    const mq = window.matchMedia(`(max-width: ${DESKTOP_BREAKPOINT - 1}px)`);
+    const onChange = () => {
+      const mobile = mq.matches;
+      setIsMobile(mobile);
+      if (mobile !== wasMobile.current) {
+        setIsSidebarOpen(mobile ? false : readDesktopSidebar());
+        wasMobile.current = mobile;
       }
     };
-
-    // Set initial layout on mount
-    handleResize();
-
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
   }, []);
 
   useEffect(() => {
-    // Only persist state on desktop
-    if (window.innerWidth >= DESKTOP_BREAKPOINT) {
-      try {
-        window.localStorage.setItem('sidebarOpen_desktop_v1', JSON.stringify(isSidebarOpen));
-      } catch (error) {
-        console.error("Could not save sidebar state:", error);
-      }
+    if (isMobile) return;
+    try {
+      window.localStorage.setItem(SIDEBAR_KEY, JSON.stringify(isSidebarOpen));
+    } catch {
+      /* storage unavailable; preference just won't persist */
     }
-  }, [isSidebarOpen]);
-  
-  const setLayout = (newLayout: Layout) => {
-    setLayoutState(newLayout);
+  }, [isSidebarOpen, isMobile]);
+
+  const revealSidebarPanel = (panel: SidebarPanel) => {
+    setSidebarPanel(panel);
+    setIsSidebarOpen(true);
   };
 
-
   return (
-    <AppContext.Provider value={{
-      isSettingsOpen, setIsSettingsOpen,
-      isSidebarOpen, setIsSidebarOpen,
-      sidebarWidth, setSidebarWidth,
-      layout, setLayout,
-      isImportModalOpen, setIsImportModalOpen,
-      isOnboardingOpen, setIsOnboardingOpen,
-      hasOnboarded, setHasOnboarded
-    }}>
+    <AppContext.Provider
+      value={{
+        mode,
+        setMode,
+        isSettingsOpen,
+        setIsSettingsOpen,
+        isSidebarOpen,
+        setIsSidebarOpen,
+        sidebarPanel,
+        setSidebarPanel,
+        revealSidebarPanel,
+        sidebarWidth,
+        setSidebarWidth,
+        layout,
+        setLayout,
+        isImportModalOpen,
+        setIsImportModalOpen,
+        isOnboardingOpen,
+        setIsOnboardingOpen,
+        hasOnboarded,
+        setHasOnboarded,
+        isCommandPaletteOpen,
+        setIsCommandPaletteOpen,
+        isMobile,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );

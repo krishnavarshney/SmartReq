@@ -1,6 +1,27 @@
 import { ApiRequest, KeyValueItem } from '../types';
 import { interpolateString } from './interpolation';
 
+// btoa() throws on non-Latin1 characters, which real credentials can contain.
+const base64Utf8 = (value: string): string => {
+    const bytes = new TextEncoder().encode(value);
+    let bin = '';
+    bytes.forEach(b => { bin += String.fromCharCode(b); });
+    return btoa(bin);
+};
+
+const buildGraphqlPayload = (request: ApiRequest, vars: Record<string, string>): string => {
+    let variables: unknown = undefined;
+    const rawVars = request.body.graphqlVariables;
+    if (rawVars && rawVars.trim()) {
+        try {
+            variables = JSON.parse(interpolateString(rawVars, vars));
+        } catch {
+            variables = undefined;
+        }
+    }
+    return JSON.stringify({ query: interpolateString(request.body.graphqlQuery || '', vars), variables });
+};
+
 export const buildHarRequest = (request: ApiRequest, globals: KeyValueItem[]): any => {
     // --- Variable Setup ---
     const combinedVariables: Record<string, string> = {};
@@ -38,10 +59,12 @@ export const buildHarRequest = (request: ApiRequest, globals: KeyValueItem[]): a
     // --- Headers ---
     const headerMap = new Map<string, string>();
 
-    if (request.body.type === 'json' && request.body.jsonBody) {
+    if ((request.body.type === 'json' && request.body.jsonBody) || request.body.type === 'graphql') {
         headerMap.set('content-type', 'application/json');
     } else if (request.body.type === 'x-www-form-urlencoded') {
         headerMap.set('content-type', 'application/x-www-form-urlencoded');
+    } else if (request.body.type === 'raw' && request.body.rawBody) {
+        headerMap.set('content-type', request.body.rawContentType || 'text/plain');
     }
 
     switch (request.auth.type) {
@@ -49,11 +72,13 @@ export const buildHarRequest = (request: ApiRequest, globals: KeyValueItem[]): a
         case 'jwt':
             if (request.auth.token) headerMap.set('authorization', `Bearer ${interpolateString(request.auth.token, combinedVariables)}`);
             break;
-        case 'basic':
+        case 'basic': {
+            if (!request.auth.basicUser && !request.auth.basicPass) break;
             const user = interpolateString(request.auth.basicUser || '', combinedVariables);
             const pass = interpolateString(request.auth.basicPass || '', combinedVariables);
-            headerMap.set('authorization', `Basic ${btoa(`${user}:${pass}`)}`);
+            headerMap.set('authorization', `Basic ${base64Utf8(`${user}:${pass}`)}`);
             break;
+        }
         case 'apiKey':
             if (request.auth.apiKeyAddTo === 'header' && request.auth.apiKeyKey) {
                 const name = interpolateString(request.auth.apiKeyKey, combinedVariables).trim();
@@ -79,6 +104,16 @@ export const buildHarRequest = (request: ApiRequest, globals: KeyValueItem[]): a
                 postData.mimeType = 'application/json';
                 postData.text = interpolateString(request.body.jsonBody, combinedVariables);
             }
+            break;
+        case 'raw':
+            if (request.body.rawBody) {
+                postData.mimeType = request.body.rawContentType || 'text/plain';
+                postData.text = interpolateString(request.body.rawBody, combinedVariables);
+            }
+            break;
+        case 'graphql':
+            postData.mimeType = 'application/json';
+            postData.text = buildGraphqlPayload(request, combinedVariables);
             break;
         case 'form-data':
             postData.mimeType = 'multipart/form-data';

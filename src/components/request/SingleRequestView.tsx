@@ -1,19 +1,22 @@
-import React, { useMemo, useEffect, useCallback } from 'react';
-import { Resizable } from 're-resizable';
+import React, { useMemo, useCallback, useState } from 'react';
 import { ApiRequest, SingleRequestLog } from '../../types';
-import { HorizontalResizableHandle } from '../ui/HorizontalResizableHandle';
-import { VerticalResizableHandle } from '../ui/VerticalResizableHandle';
-import { CornerResizableHandle } from '../ui/CornerResizableHandle';
-import { RequestTabs } from '../tabs/RequestTabs';
-import { RequestPanel } from '../RequestPanel';
-import { RequestComposer } from '../RequestComposer';
+import { RequestTabs } from './RequestTabs';
+import { RequestPanel } from './RequestPanel';
+import { RequestComposer } from './RequestComposer';
+import { SplitPane } from './SplitPane';
 import { ResponsePanel } from '../response/ResponsePanel';
 import { useApp } from '../../context/AppContext';
 import { useTabs } from '../../context/TabsContext';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { useLog } from '../../context/LogContext';
+import { useToast } from '../../context/ToastContext';
 import { buildFinalRequest } from '../../api';
-import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { Button, IconButton } from '../ui/Button';
+import { Tooltip } from '../ui/Tooltip';
+import { EmptyState } from '../ui/EmptyState';
+import { Code2, Save, FilePlus } from '../icons';
+import { CodeSnippetModal } from '../modals/CodeSnippetModal';
+import { MOD_KEY } from '../Header';
 
 interface SingleRequestViewProps {
   handleNewRequest: () => void;
@@ -26,6 +29,8 @@ interface SingleRequestViewProps {
   isGeneratingTests: boolean;
   composerActiveTab: string | null;
   setComposerActiveTab: (tab: string | null) => void;
+  /** Optional: abort the in-flight request. When given, Send turns into Cancel while loading. */
+  handleCancelRequest?: () => void;
 }
 
 export const SingleRequestView: React.FC<SingleRequestViewProps> = ({
@@ -39,118 +44,147 @@ export const SingleRequestView: React.FC<SingleRequestViewProps> = ({
   isGeneratingTests,
   composerActiveTab,
   setComposerActiveTab,
+  handleCancelRequest,
 }) => {
-  const { layout } = useApp();
-  const { activeTab, activeRequest, updateTab, isBodyInvalid, setIsBodyInvalid } = useTabs();
+  const { layout, isMobile } = useApp();
+  const { activeTab, activeRequest, updateTab, isBodyInvalid } = useTabs();
   const { globals, findNode, activeEnvironmentId, environments } = useWorkspace();
   const { logs } = useLog();
+  const { addToast } = useToast();
+  const [isCodeOpen, setIsCodeOpen] = useState(false);
 
-  useEffect(() => {}, [layout]);
-
-  const activeEnvironmentVariables = useMemo(() => {
-    const activeEnv = environments.find(e => e.id === activeEnvironmentId);
-    return activeEnv ? activeEnv.variables : [];
-  }, [environments, activeEnvironmentId]);
-
-  const allVariables = useMemo(() => [...globals, ...activeEnvironmentVariables], [globals, activeEnvironmentVariables]);
+  const allVariables = useMemo(() => {
+    const activeEnv = environments.find((e) => e.id === activeEnvironmentId);
+    return [...globals, ...(activeEnv ? activeEnv.variables : [])];
+  }, [globals, environments, activeEnvironmentId]);
 
   const activeLogForResponsePanel = useMemo<SingleRequestLog | null>(() => {
     if (!activeTab?.latestResponse || !activeRequest) return null;
-    
-    const log = logs.find(l => l.mode === 'single' && l.response === activeTab.latestResponse) as SingleRequestLog | undefined;
+    const log = logs.find((l) => l.mode === 'single' && l.response === activeTab.latestResponse) as SingleRequestLog | undefined;
     if (log) return log;
-
     return {
       id: 0,
       mode: 'single',
-      request: buildFinalRequest(activeRequest, {}, allVariables),
+      request: buildFinalRequest(activeRequest, {}, allVariables, { runScripts: false }),
       originalRequest: activeRequest,
       response: activeTab.latestResponse,
       timestamp: new Date().toISOString(),
-    }
+    };
   }, [activeTab, activeRequest, logs, allVariables]);
-  
-  const responseHistoryForActiveRequest = useMemo(() => {
-    if (!activeTab?.originalRequestId) return activeTab?.latestResponse ? [activeLogForResponsePanel!] : [];
-    const node = findNode(activeTab.originalRequestId);
-    if (node?.type === 'request') return node.responses || [];
-    return [];
-  }, [findNode, activeTab?.originalRequestId, activeTab?.latestResponse, activeLogForResponsePanel]);
 
-  const handleGenerateTestsAndSwitchTab = useCallback(async () => {
-    await onGenerateTests();
-  }, [onGenerateTests]);
-  
-  const isMobile = useMediaQuery('(max-width: 768px)');
+  const responseHistory = useMemo(() => {
+    if (!activeTab?.originalRequestId) return activeLogForResponsePanel ? [activeLogForResponsePanel] : [];
+    const node = findNode(activeTab.originalRequestId);
+    return node?.type === 'request' ? node.responses || [] : [];
+  }, [findNode, activeTab?.originalRequestId, activeLogForResponsePanel]);
+
+  const handlePasteCurl = useCallback(
+    async (command: string) => {
+      try {
+        const { parseCurl } = await import('../../utils/curl');
+        const parsed = parseCurl(command);
+        handleRequestUpdate(parsed);
+        addToast('Imported cURL command', 'success');
+        return true;
+      } catch (e) {
+        addToast(e instanceof Error ? e.message : 'Could not parse that cURL command', 'error');
+        return false;
+      }
+    },
+    [handleRequestUpdate, addToast]
+  );
+
+  const onComposerChange = useCallback(
+    (req: ApiRequest) => {
+      if (activeTab) updateTab(activeTab.id, { request: req, isDirty: true });
+    },
+    [activeTab, updateTab]
+  );
+  const noop = useCallback(() => {}, []);
+
+  const stacked = isMobile || layout === 'vertical';
 
   return (
-    <div className={`flex-grow flex gap-4 ${isMobile || layout === 'vertical' ? 'flex-col' : 'flex-row'}`}>
-      <Resizable 
-        style={{ viewTransitionName: 'request-panel' }}
-        className="flex flex-col overflow-hidden border border-border h-full rounded-lg bg-card shadow-popover"
-        defaultSize={{
-          width: isMobile ? '100%' : (layout === 'horizontal' ? '50%' : '100%'),
-          height: isMobile ? 'auto' : (layout === 'vertical' ? '50%' : '100%'),
-        }}
-        minHeight={isMobile ? 'auto' : 200}
-        minWidth={isMobile ? 'auto' : 260}
-        enable={{
-          right: !isMobile && layout === 'horizontal',
-          bottom: !isMobile && layout === 'vertical',
-          bottomRight: !isMobile && layout !== 'vertical',
-        }}
-        handleComponent={{ 
-          bottom: <HorizontalResizableHandle />, 
-          right: <VerticalResizableHandle />,
-          bottomRight: <CornerResizableHandle />
-        }}
-      >
-        <div className="h-full w-full flex flex-col rounded-lg overflow-hidden bg-card">
-          <RequestTabs 
-            onNewTab={handleNewRequest}
-          />
-          {activeTab && activeRequest ? (
-            <>
-              <RequestPanel
-                method={activeRequest.method}
-                onMethodChange={method => handleRequestUpdate({ method })}
-                url={activeRequest.url}
-                onUrlChange={url => handleRequestUpdate({ url })}
-                onSend={handleSingleSend}
-                isLoading={isLoading}
-                isBodyInvalid={isBodyInvalid}
-                globals={allVariables}
-              />
-              <div className="flex-grow overflow-y-auto max-h-full">
-                <RequestComposer 
-                  request={activeRequest} 
-                  onRequestChange={req => updateTab(activeTab.id, { request: req, isDirty: true })} 
-                  onBodyValidationChange={setIsBodyInvalid}
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <RequestTabs onNewTab={handleNewRequest} />
+      {activeTab && activeRequest ? (
+        <>
+          <div className="flex-shrink-0 border-b border-border bg-card px-3 py-2">
+            <RequestPanel
+              method={activeRequest.method}
+              onMethodChange={(method) => handleRequestUpdate({ method })}
+              url={activeRequest.url}
+              onUrlChange={(url) => handleRequestUpdate({ url })}
+              onSend={handleSingleSend}
+              onCancel={handleCancelRequest}
+              isLoading={isLoading}
+              isBodyInvalid={isBodyInvalid}
+              globals={allVariables}
+              onPasteCurl={handlePasteCurl}
+              actions={
+                <>
+                  <Tooltip content="Save" shortcut={`${MOD_KEY} S`} side="bottom">
+                    <Button variant="secondary" onClick={handleSaveRequest} className="h-9 px-2.5" aria-label="Save request">
+                      <Save className="h-3.5 w-3.5" />
+                      <span className="hidden lg:inline">Save</span>
+                    </Button>
+                  </Tooltip>
+                  <Tooltip content="Generate code snippet" side="bottom">
+                    <IconButton variant="ghost" className="!h-9 !w-9 hidden md:inline-flex" onClick={() => setIsCodeOpen(true)} disabled={!activeRequest.url.trim()} aria-label="Generate code snippet">
+                      <Code2 className="h-4 w-4" />
+                    </IconButton>
+                  </Tooltip>
+                </>
+              }
+            />
+          </div>
+          <SplitPane
+            key={stacked ? 'v' : 'h'}
+            direction={stacked ? 'vertical' : 'horizontal'}
+            storageKey="singleRequestSplit_v1"
+            minSize={stacked ? 160 : 300}
+            aria-label="Resize request and response panes"
+            first={
+              <section aria-label="Request details" className="flex h-full min-h-0 flex-col bg-card">
+                <RequestComposer
+                  request={activeRequest}
+                  onRequestChange={onComposerChange}
+                  onBodyValidationChange={noop}
                   onGenerateBulkData={handleGenerateBulkData}
-                  onSave={handleSaveRequest}
                   testResults={activeTab.latestResponse?.testResults}
                   globals={allVariables}
                   activeTab={composerActiveTab}
                   onTabChange={setComposerActiveTab}
+                  showCodeAction={isMobile}
                 />
-              </div>
-            </>
-          ) : (
-            <div className="flex items-center justify-center h-full text-muted-foreground">
-              <p>Open a request from the sidebar or create a new one.</p>
-            </div>
-          )}
-        </div>
-      </Resizable>
-      <div className="flex-grow flex flex-col overflow-y-auto h-full rounded-lg bg-card border border-border shadow-popover" style={{ viewTransitionName: 'response-panel' }}>
-        <ResponsePanel 
-          currentLog={activeLogForResponsePanel} 
-          isLoading={isLoading} 
-          responseHistory={responseHistoryForActiveRequest}
-          onGenerateTests={handleGenerateTestsAndSwitchTab}
-          isGeneratingTests={isGeneratingTests}
-        />
-      </div>
+              </section>
+            }
+            second={
+              <section aria-label="Response" className="flex h-full min-h-0 flex-col bg-card">
+                <ResponsePanel
+                  currentLog={activeLogForResponsePanel}
+                  isLoading={isLoading}
+                  responseHistory={responseHistory}
+                  onGenerateTests={onGenerateTests}
+                  isGeneratingTests={isGeneratingTests}
+                />
+              </section>
+            }
+          />
+          {isCodeOpen && <CodeSnippetModal request={activeRequest} globals={allVariables} onClose={() => setIsCodeOpen(false)} />}
+        </>
+      ) : (
+        <EmptyState
+          icon={<FilePlus />}
+          title="No request open"
+          message="Open a request from the sidebar, or start a new one."
+          className="bg-card"
+        >
+          <Button onClick={handleNewRequest}>
+            <FilePlus className="h-3.5 w-3.5" /> New request
+          </Button>
+        </EmptyState>
+      )}
     </div>
   );
 };

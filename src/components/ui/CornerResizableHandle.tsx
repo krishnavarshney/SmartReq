@@ -1,12 +1,8 @@
 import React from 'react';
 
-export const CornerResizableHandle: React.FC = () => {
-    return (
-        <div className="absolute -bottom-2 -right-2 w-4 h-4 cursor-nwse-resize group z-20 flex items-center justify-center">
-            <div className="w-3 h-3 transition-all duration-200 group-hover:scale-125">
-                <div className="w-1 h-3 bg-border rounded-full absolute right-0 bottom-0 group-hover:bg-primary"></div>
-                <div className="w-3 h-1 bg-border rounded-full absolute right-0 bottom-0 group-hover:bg-primary"></div>
-            </div>
-        </div>
-    );
-};
+/** Corner grip for re-resizable. */
+export const CornerResizableHandle: React.FC = () => (
+  <div className="group absolute -bottom-1 -right-1 z-20 h-3 w-3 cursor-nwse-resize">
+    <div className="absolute bottom-1 right-1 h-1.5 w-1.5 border-b border-r border-border transition-colors duration-150 group-hover:border-primary" />
+  </div>
+);

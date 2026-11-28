@@ -1,92 +1,101 @@
 import { useEffect, useRef } from 'react';
 import { ApiRequest, KeyValueItem } from '../types';
+import { parseQueryString, serializeQuery, splitUrl, syncPathVariables } from '../utils/http-data';
+
+type Pair = { key: string; value: string };
+
+const samePairs = (a: Pair[], b: Pair[]) => a.length === b.length && a.every((p, i) => p.key === b[i].key && p.value === b[i].value);
+const enabledPairs = (params: KeyValueItem[]): Pair[] => params.filter((p) => p.enabled && p.key).map((p) => ({ key: p.key, value: p.value }));
+const samePathVars = (a: KeyValueItem[] = [], b: KeyValueItem[] = []) =>
+  a.length === b.length && a.every((p, i) => p.key === b[i].key && p.value === b[i].value);
+
+/** Rebuild the params list from the URL, reusing existing rows (ids, encode flags) where they line up. */
+export const paramsFromUrl = (url: string, current: KeyValueItem[]): KeyValueItem[] => {
+  const parsed = parseQueryString(splitUrl(url).query);
+  const enabled = current.filter((p) => p.enabled && p.key);
+  let nextId = Date.now();
+  const used = new Set<number>();
+  const rows: KeyValueItem[] = parsed.map((p, i) => {
+    const sameSlot = enabled[i];
+    const sameKey = current.find((c) => c.key === p.key && !used.has(c.id));
+    const reuse = [sameSlot, sameKey].find((c) => c && !used.has(c.id));
+    const id = reuse ? reuse.id : nextId++;
+    used.add(id);
+    return {
+      id,
+      key: p.key,
+      value: p.value,
+      enabled: true,
+      encode: (sameKey ?? sameSlot)?.encode ?? true,
+    };
+  });
+  // Disabled rows are not in the URL; keep them.
+  const disabled = current.filter((p) => !p.enabled && (p.key || p.value));
+  disabled.forEach((d) => {
+    rows.push(used.has(d.id) ? { ...d, id: nextId++ } : d);
+  });
+  return rows;
+};
+
+/** Replace the URL's query string with the enabled params, keeping the rest of the URL as typed. */
+export const urlFromParams = (url: string, params: KeyValueItem[]): string => {
+  const { base, hash } = splitUrl(url);
+  const pairs = enabledPairs(params);
+  return `${base}${pairs.length ? `?${serializeQuery(pairs)}` : ''}${hash}`;
+};
 
 /**
- * Custom hook to synchronize the URL's query string with the query parameters editor.
- * It handles two-way data binding:
- * 1. URL input changes -> update params editor.
- * 2. Params editor changes -> update URL input.
- * A ref-based lock is used to prevent infinite update loops.
+ * Two-way sync between the URL field and the Params editor, plus `:name` path variables.
+ * Whichever side changed since the last render is the source; the other side is only
+ * written when it differs semantically, so opening a request never marks it dirty and
+ * typing in either place never moves the caret.
  */
+export interface UrlSyncOptions {
+  /** True when the sync only normalizes a request that was just opened or imported (not a user edit). */
+  silent: boolean;
+}
+
 export const useUrlSync = (
-    request: ApiRequest | undefined,
-    updateRequest: (updates: Partial<ApiRequest>) => void
+  request: ApiRequest | undefined,
+  updateRequest: (updates: Partial<ApiRequest>, options?: UrlSyncOptions) => void
 ) => {
-    const isSyncing = useRef(false);
-    const debounceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prev = useRef<{ url?: string; params?: KeyValueItem[] }>({});
+  const updateRef = useRef(updateRequest);
+  updateRef.current = updateRequest;
 
-    // Sync from URL search params TO KeyValueEditor state
-    useEffect(() => {
-        if (!request || isSyncing.current) return;
+  const url = request?.url;
+  const params = request?.queryParams;
+  const pathVariables = request?.pathVariables;
 
-        try {
-            const url = new URL(request.url, window.location.origin); // Add base for relative URLs
-            const paramsFromUrl: KeyValueItem[] = [];
-            let idCounter = Date.now();
-            url.searchParams.forEach((value, key) => {
-                paramsFromUrl.push({ id: idCounter++, key, value, enabled: true });
-            });
+  useEffect(() => {
+    if (url === undefined || !params) return;
+    const urlChanged = prev.current.url !== url;
+    const paramsChanged = prev.current.params !== params;
+    prev.current = { url, params };
+    if (!urlChanged && !paramsChanged) return;
 
-            // Create a canonical string representation of active params for comparison
-            const paramsFromUrlString = JSON.stringify(paramsFromUrl.map(p => [p.key, p.value]));
-            const currentParamsString = JSON.stringify(request.queryParams.filter(p => p.enabled && p.key).map(p => [p.key, p.value]));
-            
-            if (paramsFromUrlString !== currentParamsString) {
-                isSyncing.current = true;
-                // Preserve any disabled params from the editor
-                const disabledParams = request.queryParams.filter(p => !p.enabled && p.key);
-                const newParams = [...paramsFromUrl, ...disabledParams];
-                
-                // Ensure there's always an empty row for user input
-                if (newParams.length === 0 || newParams[newParams.length - 1].key || newParams[newParams.length - 1].value) {
-                    newParams.push({ id: idCounter++, key: '', value: '', enabled: true });
-                }
-                
-                updateRequest({ queryParams: newParams });
-                
-                // Release the lock after a short delay to allow React state to update
-                setTimeout(() => { isSyncing.current = false; }, 50);
-            }
-        } catch (e) {
-            // Invalid URL, do nothing
-        }
-    }, [request?.url]); // Dependency: only the URL string itself
+    const updates: Partial<ApiRequest> = {};
+    const fromUrl = parseQueryString(splitUrl(url).query);
+    const inEditor = enabledPairs(params);
 
-    // Sync from KeyValueEditor state TO URL search params
-    useEffect(() => {
-        if (!request || isSyncing.current) return;
+    if (!samePairs(fromUrl, inEditor)) {
+      // When both changed at once (a request was opened or imported) and the URL carries no
+      // query, the params are the source; otherwise whichever side the user edited wins.
+      const urlIsSource = urlChanged && !(paramsChanged && fromUrl.length === 0);
+      if (urlIsSource) updates.queryParams = paramsFromUrl(url, params);
+      else updates.url = urlFromParams(url, params);
+    }
 
-        // Debounce the update to prevent rapid URL changes while typing
-        if (debounceTimeout.current) {
-            clearTimeout(debounceTimeout.current);
-        }
+    const nextPathVars = syncPathVariables(updates.url ?? url, pathVariables);
+    if (!samePathVars(nextPathVars, pathVariables) && (nextPathVars.length > 0 || (pathVariables?.length ?? 0) > 0)) {
+      updates.pathVariables = nextPathVars;
+    }
 
-        debounceTimeout.current = setTimeout(() => {
-            try {
-                const baseUrl = request.url.split('?')[0];
-                const newSearchParams = new URLSearchParams();
-                request.queryParams
-                    .filter(p => p.enabled && p.key)
-                    .forEach(p => newSearchParams.append(p.key, p.value));
-                
-                const newSearchString = newSearchParams.toString();
-                const newUrl = newSearchString ? `${baseUrl}?${newSearchString}` : baseUrl;
-
-                if (newUrl !== request.url) {
-                    isSyncing.current = true;
-                    updateRequest({ url: newUrl });
-                    setTimeout(() => { isSyncing.current = false; }, 50);
-                }
-            } catch (e) {
-                 // Invalid base URL, do nothing
-            }
-        }, 200); // 200ms debounce
-
-        return () => {
-             if (debounceTimeout.current) {
-                clearTimeout(debounceTimeout.current);
-            }
-        }
-
-    }, [request?.queryParams]); // Dependency: only the query params array
+    if (Object.keys(updates).length > 0) {
+      if (updates.url !== undefined) prev.current.url = updates.url;
+      if (updates.queryParams) prev.current.params = updates.queryParams;
+      // Both sides changing at once means a different request was loaded; aligning it isn't an edit.
+      updateRef.current(updates, { silent: urlChanged && paramsChanged });
+    }
+  }, [url, params, pathVariables]);
 };

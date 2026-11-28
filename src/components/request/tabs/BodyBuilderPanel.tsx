@@ -1,16 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import { ApiRequest, DependencyRule } from '../../../types';
-import { MultiSelect } from '../../ui/MultiSelect';
 import { TagInput } from '../../ui/TagInput';
 import { Button, IconButton } from '../../ui/Button';
-import { generateCombinations } from '../../../utils/combinatorics';
-import { interpolateString } from '../../../utils/interpolation';
-import { JsonNode } from '../../response/JsonNode';
-import { Info, Link } from '../../icons';
-import { Tooltip } from '../../ui/Tooltip';
+import { countCombinations, listJsonPaths, planBodyCombinations } from '../../../utils/combinatorics';
+import { validateJsonTemplate } from '../../../utils/http-data';
+import { Layers, Plus, Trash2 } from 'lucide-react';
 import { EmptyState } from '../../ui/EmptyState';
 import { Input } from '../../ui/Input';
-import { Modal } from '../../ui/Modal';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../ui/Select';
+import { ConfirmDialog } from '../../ui/Modal';
+import { useBulk } from '../../../context/BulkContext';
 
 interface BodyBuilderPanelProps {
   request: ApiRequest;
@@ -18,259 +17,270 @@ interface BodyBuilderPanelProps {
   onGenerateBulkData: (data: Record<string, any>[]) => void;
 }
 
-const DependencyEditor: React.FC<{
-  rule: DependencyRule | undefined;
-  onSave: (template: string) => void;
-  onClose: () => void;
-  availableVars: string[];
-  dependencyKey: string;
-}> = ({ rule, onSave, onClose, availableVars, dependencyKey }) => {
-  const [template, setTemplate] = useState(rule?.template || '');
-  
-  const handleSave = () => {
-    onSave(template);
-    onClose();
-  };
+const MAX_ROWS = 5000;
+const PREVIEW_ROWS = 50;
 
-  return (
-    <div className="space-y-3">
-        <h3 className="font-semibold">Edit Dependency Rule for <code className="bg-muted p-1 rounded font-mono text-primary">{dependencyKey}</code></h3>
-        <p className="text-xs text-muted-foreground">Use <code className="bg-muted p-1 rounded font-mono">{`{{variable}}`}</code> syntax to reference variables.</p>
-        <Input 
-            value={template} 
-            onChange={e => setTemplate(e.target.value)}
-            placeholder="e.g., User profile for {{name}}"
-        />
-        <div className="flex flex-wrap gap-1">
-            {availableVars.map(v => (
-                <button key={v} onClick={() => setTemplate(t => `${t}{{${v}}}`)} className="text-xs bg-muted px-2 py-1 rounded hover:bg-border">
-                    {`{{${v}}}`}
-                </button>
-            ))}
-        </div>
-        <div className="flex justify-end gap-2 pt-2">
-            <Button variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
-            <Button size="sm" onClick={handleSave}>Save Rule</Button>
-        </div>
+const Step: React.FC<{ n: number; title: string; hint?: React.ReactNode; children: React.ReactNode }> = ({ n, title, hint, children }) => (
+  <section className="space-y-2">
+    <div>
+      <h3 className="flex items-center gap-2 text-[13px] font-medium text-foreground">
+        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[11px] font-semibold tabular-nums text-muted-foreground">{n}</span>
+        {title}
+      </h3>
+      {hint && <p className="ml-7 mt-0.5 text-xs text-muted-foreground">{hint}</p>}
     </div>
-  );
-};
+    <div className="ml-7">{children}</div>
+  </section>
+);
 
-const BaseJsonView: React.FC<{ 
-    json: object; 
-    rules: DependencyRule[];
-    onEditRule: (key: string, anchor: HTMLElement) => void;
-}> = ({ json, rules, onEditRule }) => {
-    const renderNode = (data: any, path: string = ''): React.ReactNode => {
-        if (typeof data !== 'object' || data === null) {
-            return <JsonNode data={data} />;
-        }
+const typeLabel = (v: unknown) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 
-        const entries = Object.entries(data);
-        const isArray = Array.isArray(data);
-
-        return (
-            <div>
-                <span className="text-muted-foreground">{isArray ? '[' : '{'}</span>
-                <div className="pl-4 border-l border-border ml-2">
-                    {entries.map(([key, value]) => {
-                        const currentPath = path ? `${path}.${key}` : key;
-                        const rule = rules.find(r => r.key === currentPath);
-                        return (
-                            <div key={key} className="flex items-start gap-2 group">
-                                <span className="text-sky-400 flex-shrink-0">"{key}":</span>
-                                <div className="flex-grow">
-                                    {rule ? <span className="text-purple-400 font-mono text-sm italic">"{rule.template}"</span> : renderNode(value, currentPath)}
-                                </div>
-                                <Tooltip content={`Set a dynamic value for "${currentPath}"`}>
-                                    <IconButton size="sm" variant="ghost" className="h-5 w-5 opacity-0 group-hover:opacity-100" onClick={(e) => onEditRule(currentPath, e.currentTarget)}>
-                                        <Link className={`h-3.5 w-3.5 ${rule ? 'text-primary' : ''}`} />
-                                    </IconButton>
-                                </Tooltip>
-                            </div>
-                        );
-                    })}
-                </div>
-                <span className="text-muted-foreground">{isArray ? ']' : '}'}</span>
-            </div>
-        );
-    };
-    return <div className="font-mono text-sm p-4 bg-muted rounded-lg">{renderNode(json)}</div>;
-};
+const display = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v));
 
 export const BodyBuilderPanel: React.FC<BodyBuilderPanelProps> = ({ request, onRequestChange, onGenerateBulkData }) => {
-    const { body, bodyBuilderVariables = {}, dependencyRules = [] } = request;
-    
-    const [editorState, setEditorState] = useState<{key: string, anchor: HTMLElement | null} | null>(null);
+  const { body, bodyBuilderVariables = {}, dependencyRules = [] } = request;
+  const { bulkData, setBulkRequest } = useBulk();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [newRule, setNewRule] = useState<DependencyRule>({ key: '', template: '' });
 
-    const { availableKeys, baseJson } = useMemo(() => {
-        if (body.type !== 'json' || !body.jsonBody) {
-            return { availableKeys: [], baseJson: null };
-        }
-        try {
-            const parsed = JSON.parse(body.jsonBody);
-            // For now, only allow top-level keys as variables for simplicity
-            const keys = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? Object.keys(parsed) : [];
-            return { availableKeys: keys, baseJson: parsed };
-        } catch {
-            return { availableKeys: [], baseJson: null };
-        }
-    }, [body.jsonBody, body.type]);
-    
-    const selectedVariables = Object.keys(bodyBuilderVariables);
-    
-    const generatedCombinations = useMemo(() => {
-        if (selectedVariables.length === 0) return [];
-        return generateCombinations(bodyBuilderVariables);
-    }, [bodyBuilderVariables]);
-
-    const finalData = useMemo(() => {
-        return generatedCombinations.map(combo => {
-            const finalBody = JSON.parse(JSON.stringify(baseJson)); // Deep clone
-            // Apply variables
-            Object.assign(finalBody, combo);
-
-            // Apply dependencies
-            dependencyRules.forEach(rule => {
-                // Simple dot notation setting. Can be improved for deep paths.
-                const path = rule.key.split('.');
-                let current = finalBody;
-                for(let i=0; i < path.length - 1; i++) {
-                    current = current[path[i]];
-                    if (typeof current !== 'object') return; // Path doesn't exist
-                }
-                current[path[path.length - 1]] = interpolateString(rule.template, combo);
-            });
-            
-            return finalBody;
-        });
-    }, [generatedCombinations, dependencyRules, baseJson]);
-
-
-    const handleVariablesChange = (newVars: Record<string, string[]>) => {
-        onRequestChange({ ...request, bodyBuilderVariables: newVars });
-    };
-
-    const handleSelectionChange = (selection: string[]) => {
-        const newVars = { ...bodyBuilderVariables };
-        // Remove deselected keys
-        Object.keys(newVars).forEach(key => {
-            if (!selection.includes(key)) {
-                delete newVars[key];
-            }
-        });
-        // Add new selected keys
-        selection.forEach(key => {
-            if (!newVars[key]) {
-                newVars[key] = [];
-            }
-        });
-        handleVariablesChange(newVars);
-    };
-    
-    const handleRuleSave = (key: string, template: string) => {
-        const newRules = [...dependencyRules.filter(r => r.key !== key)];
-        if (template) {
-            newRules.push({ key, template });
-        }
-        onRequestChange({ ...request, dependencyRules: newRules });
-    };
-
-    if (body.type !== 'json' || !baseJson) {
-        return <EmptyState title="Unsupported Body Type" message="Body Builder only works with a valid JSON body. Please define a JSON body in the 'Body' tab first." />;
+  const baseJson = useMemo(() => {
+    if (body.type !== 'json' || !body.jsonBody?.trim() || validateJsonTemplate(body.jsonBody)) return null;
+    try {
+      const parsed = JSON.parse(body.jsonBody);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null; // contains {{variables}}; the builder needs a concrete example body
     }
+  }, [body.type, body.jsonBody]);
 
+  const availableKeys = useMemo(() => (baseJson ? Object.keys(baseJson) : []), [baseJson]);
+  const selected = useMemo(() => Object.keys(bodyBuilderVariables).filter((k) => availableKeys.includes(k)), [bodyBuilderVariables, availableKeys]);
+  const varsInUse = useMemo(() => Object.fromEntries(selected.map((k) => [k, bodyBuilderVariables[k] || []])), [selected, bodyBuilderVariables]);
+  const total = countCombinations(varsInUse);
+  const tooMany = total > MAX_ROWS;
+
+  const rulePaths = useMemo(() => (baseJson ? listJsonPaths(baseJson).filter((p) => !selected.includes(p.split('.')[0]) && !dependencyRules.some((r) => r.key === p)) : []), [
+    baseJson,
+    selected,
+    dependencyRules,
+  ]);
+
+  const preview = useMemo(
+    () => (baseJson && total > 0 ? planBodyCombinations(baseJson, varsInUse, dependencyRules, Math.min(PREVIEW_ROWS, MAX_ROWS)) : null),
+    [baseJson, varsInUse, dependencyRules, total]
+  );
+
+  const setVariables = (next: Record<string, string[]>) => onRequestChange({ ...request, bodyBuilderVariables: next });
+
+  const toggleKey = (key: string) => {
+    const next = { ...bodyBuilderVariables };
+    if (key in next) delete next[key];
+    else next[key] = baseJson && baseJson[key] !== undefined && typeof baseJson[key] !== 'object' ? [String(baseJson[key])] : [];
+    setVariables(next);
+  };
+
+  const addRule = () => {
+    if (!newRule.key || !newRule.template) return;
+    onRequestChange({ ...request, dependencyRules: [...dependencyRules.filter((r) => r.key !== newRule.key), newRule] });
+    setNewRule({ key: '', template: '' });
+  };
+
+  const sendToBulk = () => {
+    if (!baseJson) return;
+    const plan = planBodyCombinations(baseJson, varsInUse, dependencyRules, MAX_ROWS);
+    setBulkRequest({ ...request, body: { ...request.body, type: 'json', jsonBody: plan.template } });
+    onGenerateBulkData(plan.rows);
+    setConfirmOpen(false);
+  };
+
+  if (!baseJson) {
     return (
-        <div className="p-4 space-y-6">
-            <section>
-                <h3 className="text-md font-semibold mb-2">1. Select Variables</h3>
-                <p className="text-sm text-muted-foreground mb-3">Choose the keys from your JSON body that you want to vary.</p>
-                <Tooltip content="Select keys from your JSON body to use as variables for generating combinations.">
-                  <MultiSelect 
-                      options={availableKeys}
-                      selected={selectedVariables}
-                      onSelectionChange={handleSelectionChange}
-                  />
-                </Tooltip>
-            </section>
-
-            {selectedVariables.length > 0 && (
-                <section className="animate-fade-in">
-                    <h3 className="text-md font-semibold mb-2">2. Provide Values</h3>
-                    <p className="text-sm text-muted-foreground mb-3">Enter the different values for each variable. Press Enter after each value.</p>
-                    <div className="space-y-3">
-                        {selectedVariables.map(key => (
-                            <div key={key} className="grid grid-cols-4 gap-4 items-start">
-                                <label className="font-semibold text-sm pt-2">{key}</label>
-                                <div className="col-span-3">
-                                  <Tooltip content="Type a value and press Enter or comma to add it to the list.">
-                                    <TagInput 
-                                        tags={bodyBuilderVariables[key] || []}
-                                        onTagsChange={tags => handleVariablesChange({ ...bodyBuilderVariables, [key]: tags })}
-                                    />
-                                  </Tooltip>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </section>
-            )}
-
-            <section>
-                <h3 className="text-md font-semibold mb-2 flex items-center gap-2">
-                    3. Define Dependencies (Optional)
-                    <Tooltip content="Define values that should change based on the generated variables. Click the link icon next to a key to create a rule.">
-                        <Info className="h-4 w-4 text-muted-foreground" />
-                    </Tooltip>
-                </h3>
-                <BaseJsonView json={baseJson} rules={dependencyRules} onEditRule={(key, anchor) => setEditorState({ key, anchor })}/>
-            </section>
-
-            <Modal show={!!editorState} onClose={() => setEditorState(null)} size="md">
-                {editorState && (
-                    <DependencyEditor 
-                        key={editorState.key}
-                        rule={dependencyRules.find(r => r.key === editorState.key)}
-                        onSave={(template) => handleRuleSave(editorState.key, template)}
-                        onClose={() => setEditorState(null)}
-                        availableVars={selectedVariables}
-                        dependencyKey={editorState.key}
-                    />
-                )}
-            </Modal>
-
-            <section>
-                <h3 className="text-md font-semibold mb-2">4. Generate & Run</h3>
-                <p className="text-sm text-muted-foreground mb-3">A preview of the generated request bodies is shown below. When ready, send them to Bulk Mode for execution.</p>
-                 <div className="max-h-80 overflow-auto rounded-lg border border-border bg-muted">
-                    <table className="w-full text-sm">
-                        <thead className="sticky top-0 bg-card z-10">
-                            <tr>
-                                <th className="p-2 text-left font-semibold text-muted-foreground">#</th>
-                                {selectedVariables.map(key => <th key={key} className="p-2 text-left font-semibold text-muted-foreground">{key}</th>)}
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-border">
-                            {finalData.slice(0, 100).map((combo, index) => (
-                                <tr key={index} className="hover:bg-accent/50">
-                                    <td className="p-2 text-muted-foreground">{index + 1}</td>
-                                    {selectedVariables.map(key => <td key={key} className="p-2 font-mono"><JsonNode data={combo[key]} /></td>)}
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                    {finalData.length === 0 && <div className="p-4 text-center text-muted-foreground">No combinations generated yet.</div>}
-                </div>
-                {finalData.length > 100 && <p className="text-xs text-muted-foreground mt-2 text-center">Preview is limited to the first 100 rows.</p>}
-
-                <div className="mt-4 flex justify-end">
-                    <Tooltip content="Generates all request body combinations and loads them into the Bulk Mode data grid for execution.">
-                      <Button onClick={() => onGenerateBulkData(finalData)} disabled={finalData.length === 0}>
-                          Generate & Use in Bulk Mode ({finalData.length} bodies)
-                      </Button>
-                    </Tooltip>
-                </div>
-            </section>
-        </div>
+      <EmptyState
+        compact
+        icon={<Layers />}
+        title="Needs a JSON object body"
+        message={
+          body.type !== 'json'
+            ? 'The Body Builder generates variations of a JSON body. Set the body type to JSON and add an example object in the Body tab.'
+            : 'Add a valid example JSON object in the Body tab (without {{variables}}); its fields become the inputs here.'
+        }
+      />
     );
+  }
+
+  return (
+    <div className="max-w-4xl space-y-6 p-4">
+      <p className="text-xs text-muted-foreground">
+        Generate every combination of values for some fields of the body, then run them all in Bulk mode.
+      </p>
+
+      <Step n={1} title="Pick fields to vary" hint="Top-level fields of the example body.">
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Fields to vary">
+          {availableKeys.map((key) => {
+            const on = selected.includes(key);
+            return (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggleKey(key)}
+                className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-mono text-xs transition-colors focus-ring ${
+                  on ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
+                }`}
+              >
+                {key}
+                <span className="font-sans text-[10px] opacity-70">{typeLabel(baseJson[key])}</span>
+              </button>
+            );
+          })}
+        </div>
+      </Step>
+
+      {selected.length > 0 && (
+        <Step n={2} title="Values" hint="Press Enter or comma after each value; paste a comma-separated list to add many. Numbers and booleans keep their type.">
+          <div className="space-y-2">
+            {selected.map((key) => (
+              <div key={key} className="grid gap-1.5 sm:grid-cols-[160px_minmax(0,1fr)] sm:items-start sm:gap-3">
+                <label className="truncate pt-1.5 font-mono text-xs text-foreground">
+                  {key} <span className="text-muted-foreground">({(bodyBuilderVariables[key] || []).length})</span>
+                </label>
+                <TagInput
+                  tags={bodyBuilderVariables[key] || []}
+                  onTagsChange={(tags) => setVariables({ ...bodyBuilderVariables, [key]: tags })}
+                  aria-label={`Values for ${key}`}
+                />
+              </div>
+            ))}
+          </div>
+        </Step>
+      )}
+
+      <Step
+        n={selected.length > 0 ? 3 : 2}
+        title="Derived fields (optional)"
+        hint={<>Set another field from a template, e.g. <code className="font-mono">{'Profile of {{name}}'}</code>, using the fields you vary.</>}
+      >
+        <div className="space-y-2">
+          {dependencyRules.map((rule) => (
+            <div key={rule.key} className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5">
+              <span className="min-w-0 flex-shrink-0 truncate font-mono text-xs text-foreground">{rule.key}</span>
+              <span className="text-xs text-muted-foreground">=</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-xs text-info-text">{rule.template}</span>
+              <IconButton
+                size="xs"
+                aria-label={`Remove rule for ${rule.key}`}
+                onClick={() => onRequestChange({ ...request, dependencyRules: dependencyRules.filter((r) => r.key !== rule.key) })}
+                className="hover:text-destructive-text"
+              >
+                <Trash2 />
+              </IconButton>
+            </div>
+          ))}
+          {rulePaths.length > 0 && (
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Select value={newRule.key} onValueChange={(key) => setNewRule((r) => ({ ...r, key }))}>
+                <SelectTrigger className="sm:w-48" aria-label="Field to derive">
+                  <SelectValue placeholder="Field" />
+                </SelectTrigger>
+                <SelectContent>
+                  {rulePaths.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      <span className="font-mono text-xs">{p}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input
+                value={newRule.template}
+                onChange={(e) => setNewRule((r) => ({ ...r, template: e.target.value }))}
+                onKeyDown={(e) => e.key === 'Enter' && addRule()}
+                placeholder={selected[0] ? `e.g. Hello {{${selected[0]}}}` : 'Template'}
+                className="font-mono text-xs"
+                aria-label="Template"
+              />
+              <Button variant="secondary" onClick={addRule} disabled={!newRule.key || !newRule.template}>
+                <Plus className="h-3.5 w-3.5" /> Add
+              </Button>
+            </div>
+          )}
+          {selected.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {selected.map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setNewRule((r) => ({ ...r, template: `${r.template}{{${v}}}` }))}
+                  className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground focus-ring"
+                >
+                  {`{{${v}}}`}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </Step>
+
+      <Step n={selected.length > 0 ? 4 : 3} title="Preview and run">
+        {total === 0 ? (
+          <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+            {selected.length === 0 ? 'Pick at least one field to vary.' : 'Add values to see the combinations.'}
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <div className="max-h-72 overflow-auto rounded-md border border-border">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-muted">
+                  <tr>
+                    <th className="w-10 px-2 py-1.5 text-left font-medium text-muted-foreground">#</th>
+                    {[...selected, ...dependencyRules.map((r) => r.key)].map((key) => (
+                      <th key={key} className="px-2 py-1.5 text-left font-mono font-medium text-muted-foreground">
+                        {key}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {preview?.bodies.map((b, index) => (
+                    <tr key={index}>
+                      <td className="px-2 py-1.5 tabular-nums text-muted-foreground">{index + 1}</td>
+                      {selected.map((key) => (
+                        <td key={key} className="max-w-[240px] truncate px-2 py-1.5 font-mono">
+                          {display(b[key])}
+                        </td>
+                      ))}
+                      {dependencyRules.map((r) => (
+                        <td key={r.key} className="max-w-[240px] truncate px-2 py-1.5 font-mono text-info-text">
+                          {display(r.key.split('.').reduce<any>((acc, part) => acc?.[part], b))}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className={`text-xs ${tooMany ? 'text-warning-text' : 'text-muted-foreground'}`}>
+                {tooMany
+                  ? `${total.toLocaleString()} combinations is more than the ${MAX_ROWS.toLocaleString()} row limit. Remove some values.`
+                  : `${total.toLocaleString()} combination${total === 1 ? '' : 's'}${total > PREVIEW_ROWS ? `, showing the first ${PREVIEW_ROWS}` : ''}.`}
+              </p>
+              <Button onClick={() => (bulkData.length > 0 ? setConfirmOpen(true) : sendToBulk())} disabled={tooMany}>
+                <Layers className="h-3.5 w-3.5" />
+                Send {total.toLocaleString()} to Bulk
+              </Button>
+            </div>
+          </div>
+        )}
+      </Step>
+
+      <ConfirmDialog
+        show={confirmOpen}
+        title="Replace the Bulk run?"
+        description={`Bulk mode already has ${bulkData.length} data row${bulkData.length === 1 ? '' : 's'}. They will be replaced by ${total.toLocaleString()} generated rows, and the Bulk request by this request with a templated body.`}
+        confirmLabel="Replace"
+        onConfirm={sendToBulk}
+        onCancel={() => setConfirmOpen(false)}
+      />
+    </div>
+  );
 };

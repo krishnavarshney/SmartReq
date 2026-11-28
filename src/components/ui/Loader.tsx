@@ -1,15 +1,15 @@
 import React from 'react';
-import { Sparkles } from '../icons';
+import { Spinner } from './Spinner';
 
 interface LoaderProps {
   message: string;
+  className?: string;
 }
 
-export const Loader: React.FC<LoaderProps> = ({ message }) => {
-  return (
-    <div className="flex flex-col items-center justify-center h-full p-4 text-center">
-      <Sparkles className="h-8 w-8 text-primary animate-pulse" />
-      <p className="mt-2 text-sm text-muted-foreground">{message}</p>
-    </div>
-  );
-};
+/** Centered spinner with a status line, for panels waiting on async work. */
+export const Loader: React.FC<LoaderProps> = ({ message, className = '' }) => (
+  <div role="status" aria-live="polite" className={`flex h-full flex-col items-center justify-center gap-2 p-4 text-center animate-fade-in ${className}`}>
+    <Spinner className="h-5 w-5 text-muted-foreground" />
+    <p className="text-[13px] text-muted-foreground">{message}</p>
+  </div>
+);

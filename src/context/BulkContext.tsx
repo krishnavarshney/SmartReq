@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useRef } from 'react';
+import React, { createContext, useContext, useState } from 'react';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { ApiRequest, BulkResult, BulkRunState, BulkSettings } from '../types';
 import { createDefaultRequest } from '../utils/collection';
@@ -14,8 +14,6 @@ interface BulkContextType {
   setBulkSettings: React.Dispatch<React.SetStateAction<BulkSettings>>;
   bulkRequest: ApiRequest;
   setBulkRequest: React.Dispatch<React.SetStateAction<ApiRequest>>;
-  bulkRunControllerRef: React.MutableRefObject<AbortController | null>;
-  isPausedRef: React.MutableRefObject<boolean>;
 }
 
 const BulkContext = createContext<BulkContextType | undefined>(undefined);
@@ -27,9 +25,6 @@ export const BulkProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [bulkSettings, setBulkSettings] = usePersistentState<BulkSettings>('bulkSettings_v1', { concurrency: 5, delay: 0 });
     const [bulkRequest, setBulkRequest] = usePersistentState<ApiRequest>('bulkRequest_v1', createDefaultRequest());
 
-    const bulkRunControllerRef = useRef<AbortController | null>(null);
-    const isPausedRef = useRef(false);
-
     return (
         <BulkContext.Provider value={{
             bulkData, setBulkData,
@@ -37,8 +32,6 @@ export const BulkProvider: React.FC<{ children: React.ReactNode }> = ({ children
             bulkRunState, setBulkRunState,
             bulkSettings, setBulkSettings,
             bulkRequest, setBulkRequest,
-            bulkRunControllerRef,
-            isPausedRef
         }}>
             {children}
         </BulkContext.Provider>
